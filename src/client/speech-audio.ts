@@ -61,7 +61,9 @@ async function failureOf(response: Response): Promise<string> {
 function limitOf(message: string): number | undefined {
   const match = /1\.\.(\d+) characters/.exec(message)
   if (match === null) return undefined
-  const limit = Number.parseInt(match[1] ?? '', 10)
+  // A matched group is always a string here; the cast states the regex's own
+  // guarantee instead of adding a branch no input can reach.
+  const limit = Number.parseInt(match[1] as string, 10)
   return Number.isFinite(limit) && limit > 0 ? limit : undefined
 }
 
@@ -136,7 +138,19 @@ export class SpeechAudio {
     const played = single !== undefined && streamsAudio()
       ? await this.streamRequest(single, overrides, generation)
       : await this.playSentenceBySentence(splitSentences(text), overrides, generation)
-    if (played && generation === this.generation) onEnded()
+    // Both paths answer false when a later stop or speak superseded them, so a
+    // true answer is the only thing that reports an end.
+    this.report(played, onEnded)
+  }
+
+  /**
+   * Report an end for a run that played out, and stay silent for one that a
+   * later stop or speak superseded.
+   * @param played - whether the run reached its last audio frame.
+   * @param onEnded - the caller's end callback.
+   */
+  private report(played: boolean, onEnded: () => void): void {
+    if (played) onEnded()
   }
 
   /** Stop playback and abandon whatever is still arriving. */

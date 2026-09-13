@@ -86,7 +86,7 @@ export async function serveSpeechRequest(req: IncomingMessage, res: ServerRespon
   const selected = selectSpeech(section ?? DEFAULT_SPEECH_SETTINGS, text, overrides)
   if (selected === undefined) {
     res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
-    res.end(JSON.stringify({ error: `unknown speech provider "${String(overrides.provider ?? section?.provider)}"` }))
+    res.end(JSON.stringify({ error: 'unknown speech provider' }))
     return
   }
   try {

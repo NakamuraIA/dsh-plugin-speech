@@ -36,6 +36,9 @@ export function Slider({ label, value, min, max, display, onChange }: SliderProp
         min={min}
         max={max}
         value={value}
+        // The wrapping label also carries the formatted value, so the control
+        // names itself: otherwise the accessible name would read "Speed+5%".
+        aria-label={label}
         onChange={(event) => { onChange(Number(event.currentTarget.value)) }}
       />
       <span className={css.value}>{display}</span>

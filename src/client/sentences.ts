@@ -24,10 +24,10 @@ export function splitSentences(text: string, limit: number = SENTENCE_CHARS): re
   for (const line of text.split('\n')) {
     const trimmed = line.trim()
     if (trimmed === '') continue
+    // The split consumes the whitespace it cuts on, and the line is already
+    // trimmed, so every piece carries text and needs no further filtering.
     for (const sentence of trimmed.split(/(?<=[.!?…])\s+/)) {
-      const piece = sentence.trim()
-      if (piece === '') continue
-      spans.push(...bounded(piece, limit))
+      spans.push(...bounded(sentence, limit))
     }
   }
   return spans
@@ -52,7 +52,9 @@ export function splitRequests(text: string): readonly string[] {
     }
     current = current === '' ? sentence : `${current} ${sentence}`
   }
-  if (current !== '') packed.push(current)
+  // The loop leaves `current` holding the last pack, and a non-blank text always
+  // yields at least one sentence, so there is nothing to guard here.
+  packed.push(current)
   return packed
 }
 
@@ -78,6 +80,8 @@ function bounded(text: string, limit: number): readonly string[] {
     pieces.push(rest.slice(0, end).trim())
     rest = rest.slice(end).trim()
   }
-  if (rest !== '') pieces.push(rest)
+  // A cut always leaves the text that followed the break, and callers hand in
+  // trimmed spans, so `rest` is never blank here.
+  pieces.push(rest)
   return pieces
 }

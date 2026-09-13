@@ -33,6 +33,13 @@ export declare class SpeechAudio {
      * @param onEnded - called once the last audio has played out.
      */
     speak(text: string, overrides: SpeechOverrides | undefined, onEnded: () => void): Promise<void>;
+    /**
+     * Report an end for a run that played out, and stay silent for one that a
+     * later stop or speak superseded.
+     * @param played - whether the run reached its last audio frame.
+     * @param onEnded - the caller's end callback.
+     */
+    private report;
     /** Stop playback and abandon whatever is still arriving. */
     stop(): void;
     /** Stop playback and release the last object URL. */

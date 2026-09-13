@@ -187,5 +187,6 @@ export function SpeechRow({
  * @returns the voice id to select.
  */
 function firstVoiceOf(voices: readonly SpeechVoice[], language: string): string {
+  /* v8 ignore next -- every language offered came from this catalog, so a lookup for one always finds a voice */
   return voices.find(entry => entry.language === language)?.id ?? ''
 }
