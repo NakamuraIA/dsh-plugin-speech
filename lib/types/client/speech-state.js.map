@@ -1,0 +1,1 @@
+{"version":3,"file":"speech-state.js","sourceRoot":"","sources":["../../../src/client/speech-state.ts"],"names":[],"mappings":"AAAA;;;;;GAKG;AAEH,OAAO,EAAE,mBAAmB,EAAsB,MAAM,+BAA+B,CAAA;AA6BvF;;;GAGG;AACH,MAAM,UAAU,iBAAiB;IAC/B,OAAO,mBAAmB,CAAc;QACtC,MAAM,EAAE,IAAI;QACZ,OAAO,EAAE,IAAI;QACb,MAAM,EAAE,IAAI;QACZ,OAAO,EAAE,IAAI,GAAG,EAAE;KACnB,CAAC,CAAA;AACJ,CAAC"}

@@ -1,0 +1,63 @@
+/* Slider row: label, track, and current value on one line, matching the
+ * settings rows' cell rhythm. */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.label {
+  flex: 0 0 88px;
+}
+
+.range {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* Track and thumb carry the same fill/border vocabulary as the other rows. */
+.range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.range::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: 50%;
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.range::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: 50%;
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.value {
+  flex: 0 0 44px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary);
+}

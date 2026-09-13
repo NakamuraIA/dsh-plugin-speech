@@ -1,0 +1,44 @@
+/* Read-aloud action: the sibling message actions' geometry, so the strip keeps
+ * one rhythm at every content font size. */
+
+.wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(28px + var(--dsh-content-font-delta, 0px));
+  height: calc(28px + var(--dsh-content-font-delta, 0px));
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.action:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.action:disabled {
+  color: var(--dsw-alias-label-caption);
+  cursor: default;
+}
+
+.action svg {
+  width: calc(15px + var(--dsh-content-font-delta, 0px));
+  height: calc(15px + var(--dsh-content-font-delta, 0px));
+}
+
+/* Provider failure: it sits on the action line rather than in the message. */
+.failure {
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
+  color: var(--dsw-alias-state-error-primary);
+}

@@ -1,0 +1,1 @@
+{"version":3,"file":"speak-route.d.ts","sourceRoot":"","sources":["../../src/speak-route.ts"],"names":[],"mappings":"AAAA;;;;;GAKG;AAEH,OAAO,KAAK,EAAE,eAAe,EAAE,cAAc,EAAE,MAAM,WAAW,CAAA;AAEhE,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,qBAAqB,CAAA;AAkDlD;;;;;GAKG;AACH,wBAAsB,kBAAkB,CAAC,GAAG,EAAE,eAAe,EAAE,GAAG,EAAE,cAAc,EAAE,GAAG,EAAE,OAAO,GAAG,OAAO,CAAC,IAAI,CAAC,CA6C/G"}

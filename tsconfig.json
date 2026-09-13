@@ -1,0 +1,57 @@
+{
+  "extends": "../../../tsconfig.base.client.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    // The host half serves files over node:http, so this package needs the node
+    // ambient types the client base withholds.
+    "types": ["client-build-environment", "node"]
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../../../vendor/schemastery"
+    },
+    {
+      "path": "../../../vendor/cordis"
+    },
+    {
+      "path": "../../api/session-controller/tsconfig.client.json"
+    },
+    {
+      "path": "../../host/webserver"
+    },
+    {
+      "path": "../../settings/settings"
+    },
+    {
+      "path": "../locale"
+    },
+    {
+      "path": "../store"
+    },
+    {
+      "path": "../ui-chat"
+    },
+    {
+      "path": "../ui-conversation"
+    },
+    {
+      "path": "../ui-session"
+    },
+    {
+      "path": "../ui-primitives"
+    },
+    {
+      "path": "../ui-renderer"
+    },
+    {
+      "path": "../ui-settings"
+    },
+    {
+      "path": "../ui-slots"
+    }
+  ]
+}

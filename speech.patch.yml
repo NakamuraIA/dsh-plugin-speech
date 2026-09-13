@@ -1,0 +1,11 @@
+# Read-aloud patch layer.
+#
+# Add the plugin to a DeepSeek Harness Web surface without editing the checkout:
+#
+#   dsh web --patch ./speech.patch.yml
+#
+# The row name is the package name, which is also the browser module id the
+# built bundle registers itself under. Keep the two in step.
+- insert:
+    - id: ui-speech
+      name: '@nakamuraia/dsh-plugin-speech'
