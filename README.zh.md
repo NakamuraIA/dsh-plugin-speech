@@ -2,6 +2,8 @@
 
 [English](README.md) | 中文
 
+![朗读 —— DeepSeek Harness 语音插件](docs/cover.jpg)
+
 在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 中朗读助手回复：音频在生成过程中即开始播放。
 
 ## 它做什么

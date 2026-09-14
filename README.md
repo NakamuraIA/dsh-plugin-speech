@@ -2,6 +2,8 @@
 
 English | [中文](README.zh.md)
 
+![Read aloud — DeepSeek Harness speech plugin](docs/cover.jpg)
+
 Read assistant replies aloud in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), with the audio streamed while it is still being generated.
 
 ## What it does
