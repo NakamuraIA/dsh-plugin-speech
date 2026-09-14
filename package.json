@@ -3,6 +3,25 @@
   "version": "0.1.0",
   "description": "Read assistant replies aloud in DeepSeek Harness: text-to-speech providers with streaming playback.",
   "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "text-to-speech",
+    "tts",
+    "read-aloud",
+    "accessibility"
+  ],
+  "homepage": "https://github.com/NakamuraIA/dsh-plugin-speech#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NakamuraIA/dsh-plugin-speech.git"
+  },
+  "bugs": {
+    "url": "https://github.com/NakamuraIA/dsh-plugin-speech/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
