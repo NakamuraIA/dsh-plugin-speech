@@ -28,6 +28,12 @@
 1. 把包加入你的 harness 检出目录：
 
    ```sh
+   pnpm add -w @nakamuraia/dsh-plugin-speech
+   ```
+
+   若想直接跟随源码，也可以从 GitHub 安装：
+
+   ```sh
    pnpm add -w github:NakamuraIA/dsh-plugin-speech
    ```
 

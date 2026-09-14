@@ -28,6 +28,12 @@ Adding a provider means adding one folder under `src/providers/` and one line in
 1. Add the package to your harness checkout:
 
    ```sh
+   pnpm add -w @nakamuraia/dsh-plugin-speech
+   ```
+
+   Installing from GitHub works the same way, if you would rather track the source:
+
+   ```sh
    pnpm add -w github:NakamuraIA/dsh-plugin-speech
    ```
 
