@@ -10,7 +10,7 @@ Read assistant replies aloud in [DeepSeek Harness](https://github.com/deepseek-a
 
 Each finished assistant message gets a play control in its action row. Press it and the reply is spoken through a text-to-speech service; press it again and it stops. A settings row in General owns the service, the voice, and the tuning.
 
-The whole reply goes out in **one request** and comes back as **one audio file**, played from first word to last — a reading has no seams to hear. Waiting for the file costs little: the service synthesizes faster than a voice speaks, so a twenty-second reply arrives in about a second.
+The whole reply goes out in **one request** and the host streams the audio back while the service is still synthesizing it. Playback starts once a few seconds are buffered — about a second for a typical reply — and from there it is one continuous voice to the last word: the pre-buffer is what keeps it from running dry in the middle of a sentence.
 
 ## Providers
 
@@ -96,13 +96,15 @@ click ─ ▶ POST /speech/speak { text }
                            select provider from
                            its own entry config
                            ────────────────────────── ▶ synthesize
-        ◀ ─ one complete audio file ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-play it once, start to end
+        ◀ ─ audio bytes stream back ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+buffer four seconds, then play while it keeps arriving
 ```
 
 Synthesis lives on the host because a browser cannot hold an API key and cannot reach most services across CORS. The browser only posts text and plays bytes. Every editable leaf of the entry config is `.volatile()`, so a settings write lands in the running host without reloading it — the host reads the same value the browser wrote.
 
-Playback is one file in one element on purpose. Streaming the audio through `MediaSource` as it arrives is possible — the host already streams — but it is only as reliable as each engine's demuxer, and a browser that quietly fails to start it leaves a silent reply. One file cannot fail that way, and it cannot break continuity either, because a single file has no seams. The price is that speech starts once the file is complete, about a second for a typical reply. Only a reply larger than one request may carry (20 000 characters) is spoken sentence by sentence, which is where a pause between sentences can still be heard.
+Playback goes through `MediaSource` and starts once **four seconds** of audio are buffered, then plays while the rest arrives. That pre-buffer is the whole design: streaming straight away stalled whenever the service synthesized slower than the voice spoke, and waiting for the whole file was seamless but could take ten seconds. Four seconds is early enough to feel immediate — measured at about a second on a warm connection — and late enough that nothing runs dry mid-sentence. When a link in that chain is missing (no `MediaSource`, a container the engine refuses, a buffer that dies mid-reply) the reply is still played, as one whole file assembled from the bytes in hand.
+
+Only a reply larger than one request may carry (20 000 characters) is spoken sentence by sentence, which is where a pause between sentences can still be heard.
 
 A voice can also end every sentence with a long silence of its own — `pt-BR-AntonioNeural`, the schema default, leaves about 0.9 s at each one, while the multilingual voices leave none. That silence is in the audio the service returns, not in how this plugin plays it.
 

@@ -1,17 +1,18 @@
 /**
  * Browser playback over the host's synthesis route.
  *
- * The whole reply travels in one request and is played as one audio file: the
- * body is read to the end, handed to a single element as a blob, and played
- * from start to finish. One file has no seams, so a reading is continuous by
- * construction — the MediaSource path this replaced could not promise that on
- * every engine, and a browser that silently refused to start it left the reply
- * silent.
+ * The whole reply goes out in one request and the host streams the audio back
+ * while the service is still synthesizing it. The browser appends each chunk to
+ * a MediaSource buffer and starts playing once a few seconds of audio are
+ * buffered — early enough to feel immediate, late enough that playback cannot
+ * catch the network and stall in the middle of a sentence. That pre-buffer is
+ * the whole trick: streaming alone started too early and paused whenever the
+ * service fell behind; waiting for the whole file was seamless but slow.
  *
- * Waiting for the whole body costs less than it sounds: the service synthesizes
- * faster than a voice speaks, so a twenty-second reading arrives in about a
- * second. Only a reply larger than one request may carry is spoken sentence by
- * sentence, because no single request could hold it.
+ * When a link in that chain is missing — no MediaSource, a container the engine
+ * refuses, a buffer that dies mid-reply — the reply is still played, as one
+ * whole file assembled from the bytes in hand. That path cannot start before the
+ * reply is complete, but it always produces sound.
  */
 /** Per-request overrides the settings screen uses to preview an unsaved voice. */
 export interface SpeechOverrides {
@@ -28,9 +29,12 @@ export declare class SpeechAudio {
     private generation;
     private playing;
     private objectUrl;
+    /** Aborts the response body a stop would otherwise keep reading forever. */
+    private abort;
     /**
-     * Speak one text. The whole reply travels in one request and plays as one
-     * file; a reply too large for that is spoken sentence by sentence.
+     * Speak one text. The whole reply travels in one request; playback starts on
+     * the buffered head of it. A reply too large for one request is spoken
+     * sentence by sentence.
      * @param text - projected spoken text.
      * @param overrides - preview overrides, or undefined to use the durable settings.
      * @param onEnded - called once the last audio has played out.
@@ -48,13 +52,29 @@ export declare class SpeechAudio {
     /** Stop playback and release the last object URL. */
     dispose(): void;
     /**
-     * Fetch one reply and play it as a single file.
+     * Fetch one reply and play it, streaming it when the browser can.
      * @param text - the whole projected text.
      * @param overrides - preview overrides, when any.
      * @param generation - token this request belongs to.
      * @returns whether playback ran to the end under the same generation.
      */
-    private playWhole;
+    private playReply;
+    /**
+     * Append one reply's frames and start playing once enough of it is buffered.
+     * @param body - the response body carrying encoded audio.
+     * @param generation - token this request belongs to.
+     * @returns whether playback ran to the end under the same generation.
+     */
+    private streamReply;
+    /**
+     * Drain what is left of a reply and play everything received as one file.
+     * @param reader - the response reader, possibly partly consumed.
+     * @param held - chunks already in hand.
+     * @param generation - token this request belongs to.
+     * @param cause - the failure that sent the reply down this path, when there was one.
+     * @returns whether playback ran to the end under the same generation.
+     */
+    private playCollected;
     /**
      * Fallback path for a reply one request cannot carry: one request per
      * sentence, each played as a blob.
@@ -79,19 +99,19 @@ export declare class SpeechAudio {
      */
     private playBlob;
     /**
-     * Resolve when one element stops producing sound, whether it ended, failed, or
-     * was stopped by a newer request.
-     * @param element - the audio element.
-     * @param generation - token the run belongs to.
-     */
-    private playedOut;
-    /**
      * Start one element, reading a pause as the cancellation it is.
      * @param element - element to start.
      * @param generation - token the run belongs to.
      * @returns whether playback started; false means a stop got there first.
      */
     private startPlayback;
+    /**
+     * Resolve when one element stops producing sound, whether it ended, failed, or
+     * was stopped by a newer request.
+     * @param element - the audio element.
+     * @param generation - token the run belongs to.
+     */
+    private playedOut;
     private dropPlayback;
     private releaseChunk;
 }
