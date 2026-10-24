@@ -26,11 +26,6 @@ export interface SpeechRequest {
   readonly voice: string
   /** Provider-specific tuning; every provider reads only the keys it declares. */
   readonly tuning: Readonly<Record<string, unknown>>
-  /**
-   * Encoding the caller can play. Absent means the provider's default, which is
-   * what a caller that buffers whole files rather than streams wants.
-   */
-  readonly format?: SpeechFormat
 }
 
 /** Audio a provider returns for one request. */

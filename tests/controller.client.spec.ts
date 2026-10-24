@@ -125,6 +125,30 @@ describe('SpeechController', () => {
     expect(state.getSnapshot().detail).toBe('caiu')
   })
 
+  it('does not report a failure from a run a newer request replaced', async () => {
+    const state = createSpeechState()
+    let rejectFirst!: (error: Error) => void
+    const audio = {
+      speak: vi.fn()
+        .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectFirst = reject }))
+        .mockImplementationOnce(() => new Promise<void>(() => {})),
+      stop: vi.fn(),
+      dispose: vi.fn(),
+    } as unknown as SpeechAudio
+    const reported = vi.fn()
+    const controller = new SpeechController(state, audio, reported)
+    controller.record(MESSAGE, 'Olá.')
+    controller.record('msg-2', 'Outra.')
+    const first = controller.speak(MESSAGE, { skipCode: true })
+    const second = controller.speak('msg-2', { skipCode: true })
+    rejectFirst(new Error('serviço fora do ar'))
+    await first
+    // The newer run owns the row now; the old failure must not paint over it.
+    expect(state.getSnapshot()).toMatchObject({ active: 'msg-2', failure: null })
+    expect(reported).not.toHaveBeenCalled()
+    void second
+  })
+
   it('speaks a sample through the settings on screen', async () => {
     const state = createSpeechState()
     const audio = fakeAudio()

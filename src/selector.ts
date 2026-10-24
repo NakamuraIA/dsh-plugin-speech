@@ -6,7 +6,7 @@
  */
 
 import { providerById } from './providers/registry.ts'
-import type { SpeechFormat, SpeechProvider, SpeechRequest } from './providers/types.ts'
+import type { SpeechProvider, SpeechRequest } from './providers/types.ts'
 import type { SpeechProviderId, SpeechSettings } from './settings.ts'
 
 /** Per-request overrides the settings screen sends while previewing a voice. */
@@ -17,11 +17,6 @@ export interface SpeechOverrides {
   voice?: string
   /** Tuning values that override the durable block for this call only. */
   tuning?: Readonly<Record<string, unknown>>
-  /**
-   * Encoding the browser can demux as it arrives. Absent leaves the provider at
-   * its default, which is what a caller that buffers whole files wants.
-   */
-  format?: SpeechFormat
 }
 
 /** One resolved call: the provider to drive and the request it receives. */
@@ -68,9 +63,6 @@ export function selectSpeech(
       text,
       voice: overrides.voice ?? block.voice,
       tuning: { ...block.tuning, ...overrides.tuning },
-      // The route only sets this when the browser named a demuxable encoding;
-      // anything else keeps the provider's own default.
-      ...(overrides.format === undefined ? {} : { format: overrides.format }),
     },
   }
 }

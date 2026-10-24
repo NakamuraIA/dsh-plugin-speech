@@ -4,13 +4,13 @@ English | [中文](README.zh.md)
 
 ![Read aloud — DeepSeek Harness speech plugin](docs/cover.jpg)
 
-Read assistant replies aloud in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), with the audio streamed while it is still being generated.
+Read assistant replies aloud in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), one continuous voice per reply.
 
 ## What it does
 
 Each finished assistant message gets a play control in its action row. Press it and the reply is spoken through a text-to-speech service; press it again and it stops. A settings row in General owns the service, the voice, and the tuning.
 
-The reply is sent in one request and the audio is played **as it arrives**, so speech starts on the first frames instead of waiting for the whole file. The equivalent of watching an answer stream in, for audio.
+The whole reply goes out in **one request** and comes back as **one audio file**, played from first word to last — a reading has no seams to hear. Waiting for the file costs little: the service synthesizes faster than a voice speaks, so a twenty-second reply arrives in about a second.
 
 ## Providers
 
@@ -96,13 +96,15 @@ click ─ ▶ POST /speech/speak { text }
                            select provider from
                            its own entry config
                            ────────────────────────── ▶ synthesize
-        ◀ ─ audio bytes stream back ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-play as they arrive
+        ◀ ─ one complete audio file ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+play it once, start to end
 ```
 
 Synthesis lives on the host because a browser cannot hold an API key and cannot reach most services across CORS. The browser only posts text and plays bytes. Every editable leaf of the entry config is `.volatile()`, so a settings write lands in the running host without reloading it — the host reads the same value the browser wrote.
 
-The reply is carried as **WebM/Opus** when the browser can demux it and as MP3 otherwise, because as-it-arrives playback goes through `MediaSource` and engines disagree about containers: Chromium refuses MP3 there and accepts Opus. Only a browser with no usable `MediaSource` is spoken one sentence per request, and each of those pays for a fresh socket — audible as a pause between sentences. A voice that ends every sentence with a long silence of its own (some do, by design) still pauses there: that silence is in the audio, not in the transport.
+Playback is one file in one element on purpose. Streaming the audio through `MediaSource` as it arrives is possible — the host already streams — but it is only as reliable as each engine's demuxer, and a browser that quietly fails to start it leaves a silent reply. One file cannot fail that way, and it cannot break continuity either, because a single file has no seams. The price is that speech starts once the file is complete, about a second for a typical reply. Only a reply larger than one request may carry (20 000 characters) is spoken sentence by sentence, which is where a pause between sentences can still be heard.
+
+A voice can also end every sentence with a long silence of its own — `pt-BR-AntonioNeural`, the schema default, leaves about 0.9 s at each one, while the multilingual voices leave none. That silence is in the audio the service returns, not in how this plugin plays it.
 
 ## Development
 

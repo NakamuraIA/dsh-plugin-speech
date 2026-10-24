@@ -1,43 +1,23 @@
 /**
  * Browser playback over the host's synthesis route.
  *
- * The whole reply goes out in one request and the audio is played as it
- * arrives: the response body is read chunk by chunk and appended to a
- * MediaSource buffer the audio element already plays from, so speech starts on
- * the first frames and never waits for the rest — the audio equivalent of
- * watching an answer stream in.
+ * The whole reply travels in one request and is played as one audio file: the
+ * body is read to the end, handed to a single element as a blob, and played
+ * from start to finish. One file has no seams, so a reading is continuous by
+ * construction — the MediaSource path this replaced could not promise that on
+ * every engine, and a browser that silently refused to start it left the reply
+ * silent.
  *
- * Which container MediaSource can demux differs by engine: Chromium refuses
- * MP3 and takes WebM/Opus, others the other way round. The request names the one
- * this browser can play, so a single socket still carries the whole reply. Only
- * a browser with no usable MediaSource falls back to one request per sentence
- * and blob playback, which still works but puts a WebSocket handshake, and its
- * silence, inside every pause.
+ * Waiting for the whole body costs less than it sounds: the service synthesizes
+ * faster than a voice speaks, so a twenty-second reading arrives in about a
+ * second. Only a reply larger than one request may carry is spoken sentence by
+ * sentence, because no single request could hold it.
  */
 
-import type { SpeechFormat } from '../providers/types.ts'
 import { splitRequests, splitSentences } from './sentences.ts'
 
 /** Route the host exposes for synthesis. */
 const SPEAK_ROUTE = '/speech/speak'
-
-/** One encoding whose container this browser can demux while it arrives. */
-interface Streamable {
-  /** Encoding to ask the host for. */
-  readonly format: SpeechFormat
-  /** Container and codec string MediaSource must be opened with. */
-  readonly mime: string
-}
-
-/**
- * Containers worth asking for, most preferred first. WebM/Opus leads because
- * Chromium's MediaSource accepts it and rejects MP3 — which is the difference
- * between one continuous stream and a handshake per sentence.
- */
-const STREAMABLE: readonly Streamable[] = [
-  { format: 'webm', mime: 'audio/webm; codecs="opus"' },
-  { format: 'mp3', mime: 'audio/mpeg' },
-]
 
 /** Per-request overrides the settings screen uses to preview an unsaved voice. */
 export interface SpeechOverrides {
@@ -47,15 +27,6 @@ export interface SpeechOverrides {
   voice?: string
   /** Tuning values that override the durable block for this call only. */
   tuning?: Readonly<Record<string, unknown>>
-}
-
-/**
- * The encoding this browser can play while it streams in.
- * @returns the container to ask for, or undefined when MediaSource takes none of them.
- */
-function streamable(): Streamable | undefined {
-  if (typeof MediaSource === 'undefined') return undefined
-  return STREAMABLE.find(candidate => MediaSource.isTypeSupported(candidate.mime))
 }
 
 /**
@@ -89,52 +60,14 @@ function limitOf(message: string): number | undefined {
 }
 
 /**
- * Resolve once a buffer is ready to accept appends.
- * @param media - the MediaSource the audio element plays from.
- * @param mime - container and codec the buffer is opened for.
- * @returns the source buffer, in sequence mode.
+ * Whether a caught value is the interruption a pause causes. Pausing an element
+ * whose `play()` has not settled yet rejects that promise, and the platform
+ * labels the rejection an abort; it reports a stop, not a fault.
+ * @param error - the caught value.
+ * @returns true when the platform called it an abort.
  */
-function openBuffer(media: MediaSource, mime: string): Promise<SourceBuffer> {
-  return new Promise((resolve, reject) => {
-    media.addEventListener('sourceopen', () => {
-      try {
-        const buffer = media.addSourceBuffer(mime)
-        // Raw MP3 frames carry no timestamps, so sequence mode is what lets
-        // MediaSource stitch them; segments mode would reject the first append.
-        buffer.mode = 'sequence'
-        resolve(buffer)
-      } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)))
-      }
-    }, { once: true })
-  })
-}
-
-/**
- * Append one chunk and wait for the buffer to accept it.
- * @param buffer - the source buffer.
- * @param chunk - encoded audio bytes.
- */
-async function appendChunk(buffer: SourceBuffer, chunk: Uint8Array): Promise<void> {
-  const settled = new Promise<void>((resolve) => {
-    buffer.addEventListener('updateend', () => { resolve() }, { once: true })
-  })
-  // The copy re-anchors the bytes on a plain ArrayBuffer: the reader can hand
-  // back a view whose buffer is shared or detached, which SourceBuffer refuses.
-  buffer.appendBuffer(new Uint8Array(chunk))
-  await settled
-}
-
-/**
- * Resolve when an element stops producing sound, whether it ended or failed.
- * @param element - the audio element.
- */
-function finished(element: HTMLAudioElement): Promise<void> {
-  if (element.ended) return Promise.resolve()
-  return new Promise((resolve) => {
-    element.addEventListener('ended', () => { resolve() }, { once: true })
-    element.addEventListener('error', () => { resolve() }, { once: true })
-  })
+function isAbort(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { name?: unknown }).name === 'AbortError'
 }
 
 /** Owns the audio currently playing and the requests behind it. */
@@ -145,8 +78,8 @@ export class SpeechAudio {
   private objectUrl: string | undefined
 
   /**
-   * Speak one text. The whole reply travels in one request whenever it fits, and
-   * playback starts on the first audio frames that arrive.
+   * Speak one text. The whole reply travels in one request and plays as one
+   * file; a reply too large for that is spoken sentence by sentence.
    * @param text - projected spoken text.
    * @param overrides - preview overrides, or undefined to use the durable settings.
    * @param onEnded - called once the last audio has played out.
@@ -156,10 +89,8 @@ export class SpeechAudio {
     if (requests.length === 0) return
     const generation = ++this.generation
     this.dropPlayback()
-    const single = requests.length === 1 ? requests[0] : undefined
-    const target = streamable()
-    const played = single !== undefined && target !== undefined
-      ? await this.streamRequest(single, target, overrides, generation)
+    const played = requests.length === 1
+      ? await this.playWhole(requests[0] as string, overrides, generation)
       : await this.playSentenceBySentence(splitSentences(text), overrides, generation)
     // Both paths answer false when a later stop or speak superseded them, so a
     // true answer is the only thing that reports an end.
@@ -188,23 +119,21 @@ export class SpeechAudio {
   }
 
   /**
-   * Stream one request's audio into a MediaSource-backed element.
+   * Fetch one reply and play it as a single file.
    * @param text - the whole projected text.
-   * @param target - container this browser can demux, and the encoding to ask for.
    * @param overrides - preview overrides, when any.
    * @param generation - token this request belongs to.
    * @returns whether playback ran to the end under the same generation.
    */
-  private async streamRequest(
+  private async playWhole(
     text: string,
-    target: Streamable,
     overrides: SpeechOverrides | undefined,
     generation: number,
   ): Promise<boolean> {
     const response = await fetch(SPEAK_ROUTE, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text, format: target.format, ...overrides }),
+      body: JSON.stringify({ text, ...overrides }),
     })
     if (!response.ok) {
       const message = await failureOf(response)
@@ -215,56 +144,13 @@ export class SpeechAudio {
       // instead of failing the whole reply.
       return await this.playSentenceBySentence(splitSentences(text, limit), overrides, generation)
     }
-    const body = response.body
-    if (body === null) throw new Error('speech stream carried no body')
-
-    const media = new MediaSource()
-    const url = URL.createObjectURL(media)
-    const element = new Audio(url)
-    this.playing = element
-    this.objectUrl = url
-    let started = false
-    try {
-      const buffer = await openBuffer(media, target.mime)
-      const reader = body.getReader()
-      try {
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (generation !== this.generation) {
-            await reader.cancel()
-            return false
-          }
-          if (value !== undefined && value.length > 0) {
-            await appendChunk(buffer, value)
-            if (!started) {
-              started = true
-              // The first frames are enough to begin: the element keeps playing
-              // while the rest of the reply is still being synthesized.
-              await element.play()
-            }
-          }
-          if (done) break
-        }
-      } finally {
-        if (generation !== this.generation) this.releaseChunk(url)
-      }
-    } catch (error) {
-      // An engine can accept the type and still refuse the bytes. Before any
-      // sound the reply is worth retrying the slow way; once it has started,
-      // anything else would speak the beginning twice.
-      this.releaseChunk(url)
-      if (started || generation !== this.generation) throw error
-      return await this.playSentenceBySentence(splitSentences(text), overrides, generation)
-    }
-    if (!started) return false
-    if (media.readyState === 'open') media.endOfStream()
-    await finished(element)
-    this.releaseChunk(url)
-    return generation === this.generation
+    const audio = await response.blob()
+    if (generation !== this.generation) return false
+    return await this.playBlob(audio, generation)
   }
 
   /**
-   * Fallback path for a reply the browser cannot stream: one request per
+   * Fallback path for a reply one request cannot carry: one request per
    * sentence, each played as a blob.
    * @param sentences - sentence-sized spans.
    * @param overrides - preview overrides, when any.
@@ -311,26 +197,66 @@ export class SpeechAudio {
   }
 
   /**
-   * Play one buffered span and wait for it to finish.
+   * Play one buffered file and wait for it to finish.
    * @param audio - encoded audio bytes.
-   * @param generation - token this span belongs to.
-   * @returns whether the span played out under the same generation.
+   * @param generation - token this run belongs to.
+   * @returns whether the file played out under the same generation.
    */
   private async playBlob(audio: Blob, generation: number): Promise<boolean> {
     const url = URL.createObjectURL(audio)
     const element = new Audio(url)
     this.playing = element
     this.objectUrl = url
-    element.addEventListener('ended', () => {}, { once: true })
-    try {
-      await element.play()
-    } catch (error) {
+    if (!await this.startPlayback(element, generation)) {
       this.releaseChunk(url)
-      throw error
+      return false
     }
-    await finished(element)
+    await this.playedOut(element, generation)
     this.releaseChunk(url)
     return generation === this.generation
+  }
+
+  /**
+   * Resolve when one element stops producing sound, whether it ended, failed, or
+   * was stopped by a newer request.
+   * @param element - the audio element.
+   * @param generation - token the run belongs to.
+   */
+  private async playedOut(element: HTMLAudioElement, generation: number): Promise<void> {
+    if (element.ended) return
+    await new Promise<void>((resolve) => {
+      const settle = (): void => { resolve() }
+      element.addEventListener('ended', settle, { once: true })
+      element.addEventListener('error', settle, { once: true })
+      // A stop pauses the element instead of ending it. Without this branch the
+      // run would wait for an 'ended' that never comes, and every reader that
+      // stopped playback would leave a promise hanging behind it.
+      element.addEventListener('pause', () => {
+        if (generation !== this.generation) settle()
+      }, { once: true })
+    })
+  }
+
+  /**
+   * Start one element, reading a pause as the cancellation it is.
+   * @param element - element to start.
+   * @param generation - token the run belongs to.
+   * @returns whether playback started; false means a stop got there first.
+   */
+  private async startPlayback(element: HTMLAudioElement, generation: number): Promise<boolean> {
+    try {
+      await element.play()
+      return true
+    } catch (error) {
+      // A stop, or a newer request, pauses the element while play() is still
+      // settling; the platform rejects that play() with an abort. Impatience on
+      // the play button is not a service failure, and saying so painted a red
+      // message over a reply the user had simply paused.
+      if (generation !== this.generation || isAbort(error)) return false
+      // Chromium's autoplay refusal is a different error, and that one is worth
+      // reporting.
+      throw error
+    }
   }
 
   private dropPlayback(): void {

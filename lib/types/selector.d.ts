@@ -4,7 +4,7 @@
  * that knows how a settings block maps onto a provider, so a provider folder
  * never reads settings and the HTTP route never names a vendor.
  */
-import type { SpeechFormat, SpeechProvider, SpeechRequest } from './providers/types.ts';
+import type { SpeechProvider, SpeechRequest } from './providers/types.ts';
 import type { SpeechSettings } from './settings.ts';
 /** Per-request overrides the settings screen sends while previewing a voice. */
 export interface SpeechOverrides {
@@ -14,11 +14,6 @@ export interface SpeechOverrides {
     voice?: string;
     /** Tuning values that override the durable block for this call only. */
     tuning?: Readonly<Record<string, unknown>>;
-    /**
-     * Encoding the browser can demux as it arrives. Absent leaves the provider at
-     * its default, which is what a caller that buffers whole files wants.
-     */
-    format?: SpeechFormat;
 }
 /** One resolved call: the provider to drive and the request it receives. */
 export interface SelectedSpeech {

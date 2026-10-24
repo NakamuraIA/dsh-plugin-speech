@@ -8,7 +8,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import type { SpeechFormat } from './providers/types.ts'
 import { selectSpeech, type SpeechOverrides } from './selector.ts'
 import { MAX_TEXT_CHARS } from './speech-limits.ts'
 import type { SpeechSettings } from './settings.ts'
@@ -22,7 +21,6 @@ interface SpeakBody {
   provider?: unknown
   voice?: unknown
   tuning?: unknown
-  format?: unknown
 }
 
 /**
@@ -56,17 +54,6 @@ async function readBody(req: IncomingMessage): Promise<SpeakBody | undefined> {
 function tuningOf(value: unknown): Readonly<Record<string, unknown>> | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   return value as Readonly<Record<string, unknown>>
-}
-
-/**
- * Narrow the encoding hint a browser sends. An unknown value is ignored rather
- * than refused: the field only says what the caller can demux, and the
- * provider's own default is a better answer than a failed reply.
- * @param value - the request body's format member.
- * @returns the encoding, or undefined to keep the provider's default.
- */
-function formatOf(value: unknown): SpeechFormat | undefined {
-  return value === 'mp3' || value === 'webm' ? value : undefined
 }
 
 /**
@@ -106,12 +93,10 @@ export async function serveSpeechRequest(
     return
   }
   const tuning = tuningOf(body?.tuning)
-  const format = formatOf(body?.format)
   const overrides: SpeechOverrides = {
     ...(typeof body?.provider === 'string' ? { provider: body.provider } : {}),
     ...(typeof body?.voice === 'string' ? { voice: body.voice } : {}),
     ...(tuning === undefined ? {} : { tuning }),
-    ...(format === undefined ? {} : { format }),
   }
   const selected = selectSpeech(section(), text, overrides)
   if (selected === undefined) {

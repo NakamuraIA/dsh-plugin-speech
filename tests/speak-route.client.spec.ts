@@ -7,10 +7,7 @@ import type { SpeechSettings } from '../src/settings.ts'
 const edge = vi.hoisted(() => ({ toStream: vi.fn(), setMetadata: vi.fn(), getVoices: vi.fn() }))
 
 vi.mock('msedge-tts', () => ({
-  OUTPUT_FORMAT: {
-    AUDIO_24KHZ_48KBITRATE_MONO_MP3: 'mp3-format',
-    WEBM_24KHZ_16BIT_MONO_OPUS: 'webm-format',
-  },
+  OUTPUT_FORMAT: { AUDIO_24KHZ_48KBITRATE_MONO_MP3: 'mp3-format' },
   MsEdgeTTS: class {
     getVoices = edge.getVoices
     setMetadata = edge.setMetadata
@@ -161,25 +158,6 @@ describe('POST /speech/speak', () => {
     await serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, reader())
     expect(out.status).toBe(502)
     expect(out.body.toString()).toContain('caiu feio')
-  })
-
-  it('answers in the encoding the browser asked for', async () => {
-    const out = response()
-    const finished = new Promise<void>((resolve) => { out.res.on('finish', () => { resolve() }) })
-    await serveSpeechRequest(request('POST', { text: 'Olá', format: 'webm' }), out.res, reader())
-    await finished
-    expect(out.status).toBe(200)
-    expect(out.headers['content-type']).toBe('audio/webm')
-    expect(edge.setMetadata).toHaveBeenCalledWith('pt-BR-AntonioNeural', 'webm-format')
-  })
-
-  it('ignores an encoding this build cannot produce', async () => {
-    const out = response()
-    const finished = new Promise<void>((resolve) => { out.res.on('finish', () => { resolve() }) })
-    await serveSpeechRequest(request('POST', { text: 'Olá', format: 'ogg' }), out.res, reader())
-    await finished
-    expect(out.status).toBe(200)
-    expect(out.headers['content-type']).toBe('audio/mpeg')
   })
 
   it('answers 502 when the provider fails before its first chunk', async () => {
