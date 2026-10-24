@@ -2,6 +2,7 @@
 import { PassThrough } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { SpeechSettings } from '../src/settings.ts'
 
 const edge = vi.hoisted(() => ({ toStream: vi.fn(), setMetadata: vi.fn(), getVoices: vi.fn() }))
 
@@ -15,7 +16,7 @@ vi.mock('msedge-tts', () => ({
 }))
 
 const { serveSpeechRequest } = await import('../src/speak-route.ts')
-const { DEFAULT_SPEECH_SETTINGS, SPEECH_SETTINGS_NAMESPACE } = await import('../src/settings.ts')
+const { DEFAULT_SPEECH_SETTINGS, speechSection } = await import('../src/settings.ts')
 const { MAX_TEXT_CHARS } = await import('../src/speech-limits.ts')
 
 /** A request carrying one JSON body. */
@@ -50,10 +51,8 @@ function response(): { res: ServerResponse; status: number; headers: Record<stri
   }
 }
 
-/** A host context whose settings service answers one durable section. */
-const context = (section: unknown = DEFAULT_SPEECH_SETTINGS): never => ({
-  get: (name: string) => name === 'settings' ? { get: (ns: string) => ns === SPEECH_SETTINGS_NAMESPACE ? section : undefined } : undefined,
-} as never)
+/** A reader standing in for the plugin's own entry config. */
+const reader = (section: SpeechSettings = DEFAULT_SPEECH_SETTINGS): (() => SpeechSettings) => () => section
 
 /** One provider stream carrying fixed audio bytes. */
 function audioStream(bytes = 'AUDIOBYTES'): PassThrough {
@@ -71,14 +70,14 @@ beforeEach(() => {
 describe('POST /speech/speak', () => {
   it('answers 405 for any other method', async () => {
     const out = response()
-    await serveSpeechRequest(request('GET'), out.res, context())
+    await serveSpeechRequest(request('GET'), out.res, reader())
     expect(out.status).toBe(405)
   })
 
   it('answers 400 for a missing, malformed, or oversized body', async () => {
     for (const body of [undefined, { text: '' }, { text: 'x'.repeat(MAX_TEXT_CHARS + 1) }, { text: 42 }]) {
       const out = response()
-      await serveSpeechRequest(request('POST', body), out.res, context())
+      await serveSpeechRequest(request('POST', body), out.res, reader())
       expect(out.status).toBe(400)
       expect(out.body.toString()).toContain('text must be')
     }
@@ -91,7 +90,7 @@ describe('POST /speech/speak', () => {
       url: '/speech/speak',
       async *[Symbol.asyncIterator]() { yield Buffer.from('not json') },
     } as unknown as IncomingMessage
-    await serveSpeechRequest(broken, out.res, context())
+    await serveSpeechRequest(broken, out.res, reader())
     expect(out.status).toBe(400)
   })
 
@@ -102,7 +101,7 @@ describe('POST /speech/speak', () => {
       url: '/speech/speak',
       async *[Symbol.asyncIterator]() { yield Buffer.from('42') },
     } as unknown as IncomingMessage
-    await serveSpeechRequest(scalar, out.res, context())
+    await serveSpeechRequest(scalar, out.res, reader())
     expect(out.status).toBe(400)
   })
 
@@ -115,13 +114,13 @@ describe('POST /speech/speak', () => {
         for (let index = 0; index < 6; index += 1) yield Buffer.alloc(64 * 1024, 0x61)
       },
     } as unknown as IncomingMessage
-    await serveSpeechRequest(oversized, out.res, context())
+    await serveSpeechRequest(oversized, out.res, reader())
     expect(out.status).toBe(400)
   })
 
   it('answers 404 for a provider no folder claims', async () => {
     const out = response()
-    await serveSpeechRequest(request('POST', { text: 'Olá', provider: 'elevenlabs' }), out.res, context())
+    await serveSpeechRequest(request('POST', { text: 'Olá', provider: 'elevenlabs' }), out.res, reader())
     expect(out.status).toBe(404)
     expect(out.body.toString()).toContain('unknown speech provider')
   })
@@ -129,7 +128,7 @@ describe('POST /speech/speak', () => {
   it('streams the provider audio with the durable settings and no transformation', async () => {
     const out = response()
     const finished = new Promise<void>((resolve) => { out.res.on('finish', () => { resolve() }) })
-    await serveSpeechRequest(request('POST', { text: 'Olá', voice: 'voz', tuning: { rate: 5 } }), out.res, context())
+    await serveSpeechRequest(request('POST', { text: 'Olá', voice: 'voz', tuning: { rate: 5 } }), out.res, reader())
     await finished
     expect(out.status).toBe(200)
     expect(out.headers['content-type']).toBe('audio/mpeg')
@@ -138,9 +137,9 @@ describe('POST /speech/speak', () => {
     expect(out.body.toString()).toBe('AUDIOBYTES')
   })
 
-  it('falls back to the schema defaults without a settings service', async () => {
+  it('falls back to the schema defaults when the entry declares no values', async () => {
     const out = response()
-    await serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, { get: () => undefined } as never)
+    await serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, () => speechSection(undefined))
     expect(out.status).toBe(200)
     expect(edge.setMetadata).toHaveBeenCalledWith('pt-BR-AntonioNeural', 'mp3-format')
   })
@@ -148,7 +147,7 @@ describe('POST /speech/speak', () => {
   it('answers 502 when the provider refuses before streaming starts', async () => {
     edge.setMetadata.mockRejectedValue(new Error('serviço fora do ar'))
     const out = response()
-    await serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, context())
+    await serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, reader())
     expect(out.status).toBe(502)
     expect(out.body.toString()).toContain('serviço fora do ar')
   })
@@ -156,7 +155,7 @@ describe('POST /speech/speak', () => {
   it('answers 502 with the string form of a provider rejection that is not an Error', async () => {
     edge.setMetadata.mockRejectedValue('caiu feio')
     const out = response()
-    await serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, context())
+    await serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, reader())
     expect(out.status).toBe(502)
     expect(out.body.toString()).toContain('caiu feio')
   })
@@ -166,7 +165,7 @@ describe('POST /speech/speak', () => {
     edge.toStream.mockReturnValue({ audioStream: failing, metadataStream: null })
     const out = response()
     const destroyed = new Promise<void>((resolve) => { out.res.on('close', () => { resolve() }) })
-    const served = serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, context())
+    const served = serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, reader())
     failing.destroy(new Error('conexão caiu'))
     await served
     await destroyed

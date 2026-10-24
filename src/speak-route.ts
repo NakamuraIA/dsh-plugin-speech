@@ -1,17 +1,15 @@
 /**
  * `POST /speech/speak`: the browser posts text, the host selects the provider
- * from the durable settings and calls it with the deployment's credentials, and
- * the audio streams straight back. Synthesis belongs to the host because the
- * browser cannot hold an API key and cannot reach most providers across CORS.
+ * from its entry config and calls it with the deployment's credentials, and the
+ * audio streams straight back. Synthesis belongs to the host because the browser
+ * cannot hold an API key and cannot reach most providers across CORS.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { pipeline } from 'node:stream/promises'
-import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-settings'
 import { selectSpeech, type SpeechOverrides } from './selector.ts'
 import { MAX_TEXT_CHARS } from './speech-limits.ts'
-import { DEFAULT_SPEECH_SETTINGS, SPEECH_SETTINGS_NAMESPACE, type SpeechSettings } from './settings.ts'
+import type { SpeechSettings } from './settings.ts'
 
 /** Largest request body accepted; one reply is far below this. */
 const MAX_BODY_BYTES = 256 * 1024
@@ -61,9 +59,13 @@ function tuningOf(value: unknown): Readonly<Record<string, unknown>> | undefined
  * Answer one synthesis request.
  * @param req - the node:http request.
  * @param res - the node:http response.
- * @param ctx - host context carrying the settings service.
+ * @param section - reads the live preferences of this plugin's entry.
  */
-export async function serveSpeechRequest(req: IncomingMessage, res: ServerResponse, ctx: Context): Promise<void> {
+export async function serveSpeechRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  section: () => SpeechSettings,
+): Promise<void> {
   if (req.method !== 'POST') {
     res.writeHead(405)
     res.end()
@@ -76,14 +78,13 @@ export async function serveSpeechRequest(req: IncomingMessage, res: ServerRespon
     res.end(JSON.stringify({ error: `text must be 1..${MAX_TEXT_CHARS} characters` }))
     return
   }
-  const section = ctx.get('settings')?.get(SPEECH_SETTINGS_NAMESPACE) as SpeechSettings | undefined
   const tuning = tuningOf(body?.tuning)
   const overrides: SpeechOverrides = {
     ...(typeof body?.provider === 'string' ? { provider: body.provider } : {}),
     ...(typeof body?.voice === 'string' ? { voice: body.voice } : {}),
     ...(tuning === undefined ? {} : { tuning }),
   }
-  const selected = selectSpeech(section ?? DEFAULT_SPEECH_SETTINGS, text, overrides)
+  const selected = selectSpeech(section(), text, overrides)
   if (selected === undefined) {
     res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify({ error: 'unknown speech provider' }))

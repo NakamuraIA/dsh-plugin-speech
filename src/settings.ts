@@ -1,8 +1,15 @@
-/** Durable speech preferences shared by the Host schema and the browser scope. */
+/**
+ * Durable speech preferences shared by the Host schema and the browser form.
+ *
+ * The schema is the plugin's Cordis `Config`, so it is also the settings form:
+ * the profile entry id (`ui-speech`) is the namespace, and every field the
+ * settings screen may edit is marked `.volatile()`. A field without that mark
+ * would still validate the composition, but the Host refuses to edit it.
+ */
 
 import z from '@deepseek-ai/schemastery'
 
-/** Settings namespace owned by the speech plugin. */
+/** Settings namespace owned by the speech plugin: its profile entry id. */
 export const SPEECH_SETTINGS_NAMESPACE = 'ui-speech'
 
 /** Field carrying the selected provider. */
@@ -60,17 +67,83 @@ export interface SpeechSettings {
   edge: EdgeSettings
 }
 
-/** Durable speech schema; also the wire envelope the browser scope validates against. */
-export const SpeechSettingsSchema: z<SpeechSettings> = z.object({
-  [PROVIDER_FIELD]: z.union([...SPEECH_PROVIDERS]).default(DEFAULT_PROVIDER),
-  [SKIP_CODE_FIELD]: z.boolean().default(DEFAULT_SKIP_CODE),
+/**
+ * Durable speech schema and the plugin's Cordis `Config`. Every leaf is volatile,
+ * so the settings screen edits values in place instead of remounting the plugin.
+ */
+export const SpeechSettingsSchema = z.object({
+  [PROVIDER_FIELD]: z.union([...SPEECH_PROVIDERS]).default(DEFAULT_PROVIDER).volatile(),
+  [SKIP_CODE_FIELD]: z.boolean().default(DEFAULT_SKIP_CODE).volatile(),
   [EDGE_FIELD]: z.object({
-    voice: z.string().default(DEFAULT_EDGE_SETTINGS.voice),
-    rate: z.number().step(1).min(-50).max(50).default(DEFAULT_EDGE_SETTINGS.rate),
-    volume: z.number().step(1).min(-50).max(50).default(DEFAULT_EDGE_SETTINGS.volume),
-    pitch: z.number().step(1).min(-50).max(50).default(DEFAULT_EDGE_SETTINGS.pitch),
+    voice: z.string().default(DEFAULT_EDGE_SETTINGS.voice).volatile(),
+    rate: z.number().step(1).min(-50).max(50).default(DEFAULT_EDGE_SETTINGS.rate).volatile(),
+    volume: z.number().step(1).min(-50).max(50).default(DEFAULT_EDGE_SETTINGS.volume).volatile(),
+    pitch: z.number().step(1).min(-50).max(50).default(DEFAULT_EDGE_SETTINGS.pitch).volatile(),
   }).default(DEFAULT_EDGE_SETTINGS),
 })
+
+/** The resolved Host config: every editable leaf is a live reference. */
+export interface SpeechConfig {
+  /** Selected provider. */
+  provider: LiveRef<SpeechProviderId>
+  /** Whether read-aloud drops fenced code, inline code, and tables. */
+  skipCode: LiveRef<boolean>
+  /** Edge preferences. */
+  edge: {
+    /** Edge voice short name. */
+    voice: LiveRef<string>
+    /** Speaking rate delta. */
+    rate: LiveRef<number>
+    /** Volume delta. */
+    volume: LiveRef<number>
+    /** Pitch delta. */
+    pitch: LiveRef<number>
+  }
+}
+
+/** What `.volatile()` parses a field into: one stable reference over the live value. */
+export interface LiveRef<T> {
+  /**
+   * Read the value the Host currently holds.
+   * @returns the live value.
+   */
+  get(): T
+}
+
+/**
+ * Read one field of the resolved config. A volatile leaf is a live reference; a
+ * plain one is the value itself, which is what a field the profile layer left at
+ * its schema default may still be.
+ * @param field - one resolved config field.
+ * @returns the value the Host currently holds.
+ */
+export function liveValue<T>(field: LiveRef<T> | T): T {
+  if (typeof field === 'object' && field !== null && !Array.isArray(field)) {
+    const getter = (field as Partial<LiveRef<T>>).get
+    if (typeof getter === 'function') return getter.call(field)
+  }
+  return field as T
+}
+
+/**
+ * Read the whole config as the plain section the selector consumes, with every
+ * default filled in for a field the Host left unset.
+ * @param config - resolved Host config, absent when the entry declares none.
+ * @returns the durable speech settings.
+ */
+export function speechSection(config: Partial<SpeechConfig> | undefined): SpeechSettings {
+  const edge = config?.edge
+  return {
+    provider: liveValue(config?.provider) ?? DEFAULT_PROVIDER,
+    skipCode: liveValue(config?.skipCode) ?? DEFAULT_SKIP_CODE,
+    edge: {
+      voice: liveValue(edge?.voice) ?? DEFAULT_EDGE_SETTINGS.voice,
+      rate: liveValue(edge?.rate) ?? DEFAULT_EDGE_SETTINGS.rate,
+      volume: liveValue(edge?.volume) ?? DEFAULT_EDGE_SETTINGS.volume,
+      pitch: liveValue(edge?.pitch) ?? DEFAULT_EDGE_SETTINGS.pitch,
+    },
+  }
+}
 
 /** The complete section with every default filled in. */
 export const DEFAULT_SPEECH_SETTINGS: SpeechSettings = Object.freeze({

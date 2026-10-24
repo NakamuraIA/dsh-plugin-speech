@@ -6,6 +6,7 @@
  */
 
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts'
+import { synthUrl } from './gec.ts'
 import type { ProviderCredentials, SpeechAudio, SpeechProvider, SpeechRequest, SpeechVoice } from '../types.ts'
 
 /** Provider folder name and settings key. */
@@ -19,6 +20,20 @@ const FORMAT = OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3
 
 /** Response content type matching {@link FORMAT}. */
 const CONTENT_TYPE = 'audio/mpeg'
+
+/**
+ * Point the library at {@link synthUrl}. Its socket URL comes from a private
+ * static keyed to its own class name, so a subclass cannot reach it: replacing
+ * the static is the one seam that decides the token the handshake carries. The
+ * library builds a first-generation token, which the service refuses with a
+ * bare 403 since October 2026, and it also stamps the token version as `1-…`;
+ * `synthUrl` supplies both the accepted token and the accepted version.
+ *
+ * Installed at module load because every client this provider constructs must
+ * inherit it, and the replacement is a pure function of the clock.
+ */
+const library = MsEdgeTTS as unknown as { getSynthUrl: () => Promise<string> }
+library.getSynthUrl = async () => synthUrl()
 
 /**
  * Read one numeric tuning value, clamped to a range the service accepts.

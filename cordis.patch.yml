@@ -1,0 +1,18 @@
+# Read-aloud bundle patch.
+#
+# This file is the package's bundle layer: it is what `dsh.bundle.patch` names, so
+# installing the package into a profile appends it to `dsh.profile.bundles` and the
+# launcher applies this patch under the profile's own `cordis.patch.yml`.
+#
+# The same file works as a one-off overlay without installing anything:
+#
+#   dsh web --patch ./cordis.patch.yml
+#
+# Installing it *and* inserting the same row from a profile patch collides
+# (`duplicate loader entry id`), so pick one: a bundle install, or an overlay.
+#
+# The row name is the package name, which is also the browser module id the built
+# bundle registers itself under. Keep the two in step.
+- insert:
+    - id: ui-speech
+      name: '@nakamuraia/dsh-plugin-speech'

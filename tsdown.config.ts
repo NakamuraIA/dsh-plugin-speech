@@ -1,3 +1,5 @@
-import { clientBundle } from '../tsdown.client.ts'
+import { pluginBundle } from './build/plugin-bundle.ts'
 
-export default clientBundle('@deepseek-ai/dsh-client-ui-speech', ['lib/types/index.js'])
+// The id is the module-table id the browser registers this bundle under; it is
+// also the Loader row name in cordis.patch.yml. Change one, change the other.
+export default pluginBundle('@nakamuraia/dsh-plugin-speech')

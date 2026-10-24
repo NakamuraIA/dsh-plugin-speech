@@ -49,4 +49,12 @@ describe('edge provider', () => {
       { id: 'pt-BR-AntonioNeural', name: 'Antonio', language: 'pt-BR', gender: 'Male' },
     ])
   })
+
+  it('points the library at a socket URL signed with the accepted token', async () => {
+    const { MsEdgeTTS } = await import('msedge-tts')
+    const signed = await (MsEdgeTTS as unknown as { getSynthUrl: () => Promise<string> }).getSynthUrl()
+    const url = new URL(signed)
+    expect(url.searchParams.get('Sec-MS-GEC-Version')).toBe('2-143.0.3650.75')
+    expect(url.searchParams.get('Sec-MS-GEC')).toMatch(/^[0-9A-F]{16}-[0-9A-F]{64}$/)
+  })
 })

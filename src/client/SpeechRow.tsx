@@ -5,7 +5,7 @@
  * settings currently on screen — saved or not.
  */
 import { useState } from 'react'
-import { Button, IconChevronDownOutline14, Menu, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconChevronDownOutlineRegular, Menu, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SpeechVoice } from '../providers/types.ts'
 import { SPEECH_PROVIDERS, type SpeechProviderId } from '../settings.ts'
@@ -75,7 +75,8 @@ function Picker({ label, options, selected, onSelect }: {
             onClick={() => { setOpen(current => !current) }}
           >
             <span className={css.selectorText}>{active}</span>
-            <IconChevronDownOutline14 className={css.chevron} />
+            {/* The product set draws at 16px; the selector's chevron sits at 14. */}
+            <IconChevronDownOutlineRegular size={14} className={css.chevron} />
           </button>
         )}
       />

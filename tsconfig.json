@@ -1,57 +1,35 @@
 {
-  "extends": "../../../tsconfig.base.client.json",
   "compilerOptions": {
+    // The artifact is a browser bundle plus its node half, so both ambient
+    // worlds are in scope: `node:http` for the route, DOM for the action row.
+    "target": "ES2024",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "types": ["node"],
+
+    // Source imports carry the `.ts`/`.tsx` extension the bundler resolves;
+    // tsc rewrites them to `.js` in the emitted tree the bundle consumes.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
     "rootDir": "src",
-    "outDir": "lib/types",
-    // The host half serves files over node:http, so this package needs the node
-    // ambient types the client base withholds.
-    "types": ["client-build-environment", "node"]
+    "outDir": "lib/types"
   },
-  "include": [
-    "src"
-  ],
-  "references": [
-    {
-      "path": "../../../vendor/schemastery"
-    },
-    {
-      "path": "../../../vendor/cordis"
-    },
-    {
-      "path": "../../api/session-controller/tsconfig.client.json"
-    },
-    {
-      "path": "../../host/webserver"
-    },
-    {
-      "path": "../../settings/settings"
-    },
-    {
-      "path": "../locale"
-    },
-    {
-      "path": "../store"
-    },
-    {
-      "path": "../ui-chat"
-    },
-    {
-      "path": "../ui-conversation"
-    },
-    {
-      "path": "../ui-session"
-    },
-    {
-      "path": "../ui-primitives"
-    },
-    {
-      "path": "../ui-renderer"
-    },
-    {
-      "path": "../ui-settings"
-    },
-    {
-      "path": "../ui-slots"
-    }
-  ]
+  "include": ["src"]
 }

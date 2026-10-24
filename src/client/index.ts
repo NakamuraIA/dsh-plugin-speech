@@ -6,7 +6,7 @@
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { BoundActions } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
@@ -43,7 +43,7 @@ export type { SpeechSettings, SpeechProviderId } from '../settings.ts'
 export const SETTINGS_NS = 'speech'
 
 /** Required services: the surfaces' registries and the settings transport. */
-export const inject = ['slots', 'locale', 'uiConversation', 'remote', 'settingsScope']
+export const inject = ['slots', 'locale', 'uiConversation', 'configForms']
 
 /** Route the host answers the voice catalog on. */
 const VOICES_ROUTE = '/speech/voices'
@@ -78,8 +78,10 @@ export function apply(ctx: ClientContext): void {
   registerSpeechText(ctx, controller)
   ctx.effect(() => ctx.locale.register(SETTINGS_NS, { zh, en }), 'ui-speech: dictionaries')
 
-  const host: SettingsScope<SpeechSettings> = ctx.settingsScope
-    .bind<SpeechSettings>({ namespace: SPEECH_SETTINGS_NAMESPACE })
+  // The Host entry id is the settings namespace: the form is the projection of
+  // the config this plugin declares, and writes ride the settings transport the
+  // provider owns — no caller-scoped binding exists any more.
+  const host: ConfigForm<SpeechSettings> = ctx.configForms.get<SpeechSettings>(SPEECH_SETTINGS_NAMESPACE)
   const section = (): SpeechSettings => host.getSnapshot().value ?? DEFAULT_SPEECH_SETTINGS
   const projection = (): SpeechTextOptions => ({ skipCode: section().skipCode })
 
@@ -133,39 +135,36 @@ export function apply(ctx: ClientContext): void {
       bound = actions
       sync()
       refreshVoices(section().provider)
-      // The transport reports a refusal as a plain settlement and reloads the
-      // durable section, so the settled value is the only evidence that the
-      // write survived. A memory-mode page keeps the choice process-local and
-      // has no durable value to compare against.
-      const settle = (written: Promise<void>, holds: () => boolean): void => {
+      // A write answers whether the Host accepted it; a refusal also reloads the
+      // durable section, so a rejected value is visible twice over. A memory-mode
+      // page keeps the choice process-local and resolves every write as refused
+      // without ever reaching the Host, so its settlement says nothing.
+      const settle = (written: Promise<boolean>): void => {
         if (host.getSnapshot().mode === 'memory') return
         void written.then(
-          () => { actions.markWriteFailed(!holds()) },
+          (accepted) => { actions.markWriteFailed(!accepted) },
           () => { actions.markWriteFailed(true) },
         )
       }
-      const writeField = (field: string, value: unknown, holds: () => boolean): void => {
-        settle(host.set(field, value), holds)
+      const writeField = (field: string, value: unknown): void => {
+        settle(host.set(field, value))
       }
-      const writeEntry = (entryField: string, key: string, value: unknown, holds: () => boolean): void => {
-        settle(host.mutate([{ op: 'set', path: [entryField, key], value: value as never }]), holds)
+      const writeEntry = (entryField: string, key: string, value: unknown): void => {
+        settle(host.mutate([{ op: 'set', path: [entryField, key], value: value as never }]))
       }
       return {
         setProvider: (provider: SpeechProviderId) => {
-          // Widened before comparison: both sides are the same literal type, and
-          // the check is about the settled value, not about the type.
-          const requested: string = provider
-          writeField(PROVIDER_FIELD, provider, () => (section().provider as string) === requested)
+          writeField(PROVIDER_FIELD, provider)
           refreshVoices(provider)
         },
         setVoice: (voice: string) => {
-          writeEntry(activeBlockField(), 'voice', voice, () => activeVoiceSettings(section()).voice === voice)
+          writeEntry(activeBlockField(), 'voice', voice)
         },
         setTuning: (key, value) => {
-          writeEntry(activeBlockField(), key, value, () => activeVoiceSettings(section())[key] === value)
+          writeEntry(activeBlockField(), key, value)
         },
         setSkipCode: (skipCode: boolean) => {
-          writeField(SKIP_CODE_FIELD, skipCode, () => section().skipCode === skipCode)
+          writeField(SKIP_CODE_FIELD, skipCode)
         },
         test: (text: string, overrides: SpeechOverrides) => {
           void controller.speakSample(text, overrides)

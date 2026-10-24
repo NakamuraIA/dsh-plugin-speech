@@ -2,7 +2,7 @@
  * Read-aloud action for one finalized assistant message: a play/stop control in
  * the message's action strip, with the failure it hit shown beside it.
  */
-import { IconPlayOutline16, IconStopFill16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconPlayOutlineRegular, IconStopFillRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SpeechFailure, SpeechState } from './speech-state.ts'
@@ -64,7 +64,7 @@ export function SpeakAction({ messageId, t, useSpeech, toggle }: SpeechActionPro
         disabled={!known && !mine}
         onClick={() => { toggle(String(messageId)) }}
       >
-        {speaking ? <IconStopFill16 /> : <IconPlayOutline16 />}
+        {speaking ? <IconStopFillRegular /> : <IconPlayOutlineRegular />}
       </button>
     </span>
   )

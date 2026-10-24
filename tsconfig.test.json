@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Same language rules as the sources, but nothing is emitted: this project
+    // exists to typecheck the specs, which the build project does not include.
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src", "tests", "vitest.config.ts", "build"],
+  "exclude": ["tests/checkout"]
+}
