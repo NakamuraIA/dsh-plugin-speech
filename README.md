@@ -85,7 +85,7 @@ Settings opens on **General**, where a **Read aloud** row owns:
 
 The row edits the plugin's own entry config, so the chosen values persist in the profile patch beside the entry rather than in a settings document. Resetting a field restores the schema default, and a write the Host refuses leaves the stored value untouched while the row says so.
 
-Code blocks, tables, and pasted spreadsheets are never read; links keep their label and lose their target; emoji, quotes, and standalone symbols are dropped. Sentence punctuation is kept, because the voice uses it for pauses.
+Tables and pasted spreadsheets are never read, whichever way **Skip code** is set. That switch decides only whether fenced and inline code are read: with it off, the code itself is spoken and just the fences go. Links keep their label and lose their target; emoji, quotes, and standalone symbols are dropped. Sentence punctuation is kept, because the voice uses it for pauses.
 
 ## How it works
 
