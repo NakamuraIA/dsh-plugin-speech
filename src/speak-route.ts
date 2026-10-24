@@ -6,7 +6,9 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
+import type { SpeechFormat } from './providers/types.ts'
 import { selectSpeech, type SpeechOverrides } from './selector.ts'
 import { MAX_TEXT_CHARS } from './speech-limits.ts'
 import type { SpeechSettings } from './settings.ts'
@@ -20,6 +22,7 @@ interface SpeakBody {
   provider?: unknown
   voice?: unknown
   tuning?: unknown
+  format?: unknown
 }
 
 /**
@@ -56,6 +59,30 @@ function tuningOf(value: unknown): Readonly<Record<string, unknown>> | undefined
 }
 
 /**
+ * Narrow the encoding hint a browser sends. An unknown value is ignored rather
+ * than refused: the field only says what the caller can demux, and the
+ * provider's own default is a better answer than a failed reply.
+ * @param value - the request body's format member.
+ * @returns the encoding, or undefined to keep the provider's default.
+ */
+function formatOf(value: unknown): SpeechFormat | undefined {
+  return value === 'mp3' || value === 'webm' ? value : undefined
+}
+
+/**
+ * Re-yield whatever a stream iterator has left after its first chunk.
+ * @param iterator - the iterator the route already advanced once.
+ * @returns the remaining chunks.
+ */
+async function* remaining(iterator: AsyncIterator<unknown>): AsyncGenerator<Buffer> {
+  for (;;) {
+    const next = await iterator.next()
+    if (next.done === true) return
+    yield next.value as Buffer
+  }
+}
+
+/**
  * Answer one synthesis request.
  * @param req - the node:http request.
  * @param res - the node:http response.
@@ -79,10 +106,12 @@ export async function serveSpeechRequest(
     return
   }
   const tuning = tuningOf(body?.tuning)
+  const format = formatOf(body?.format)
   const overrides: SpeechOverrides = {
     ...(typeof body?.provider === 'string' ? { provider: body.provider } : {}),
     ...(typeof body?.voice === 'string' ? { voice: body.voice } : {}),
     ...(tuning === undefined ? {} : { tuning }),
+    ...(format === undefined ? {} : { format }),
   }
   const selected = selectSpeech(section(), text, overrides)
   if (selected === undefined) {
@@ -92,16 +121,28 @@ export async function serveSpeechRequest(
   }
   try {
     const audio = await selected.provider.synthesize(selected.request, {})
+    const chunks = audio.stream[Symbol.asyncIterator]()
+    // Commit the response only once the service has produced audio. Committing
+    // first would turn a provider that fails on its very first frame into an
+    // empty 200 — silence with nothing the browser can report — which is what a
+    // dropped handshake used to look like here.
+    const first = await chunks.next()
     res.writeHead(200, {
       'content-type': audio.contentType,
       // Audio is already compressed and is consumed once: never deflate it, and
       // never let a proxy hold it for another request.
       'cache-control': 'no-store, no-transform',
     })
-    await pipeline(audio.stream, res)
+    if (first.done === true) {
+      res.end()
+      return
+    }
+    res.write(first.value)
+    // The pipeline carries the rest and ends the response itself.
+    await pipeline(Readable.from(remaining(chunks)), res)
   } catch (error) {
-    // The response is committed once streaming starts; a failure before that
-    // point is reported as a provider fault the browser can show.
+    // Past the first chunk the response is committed and its length is already
+    // promised, so the only honest thing left is to tear it down.
     if (res.headersSent) {
       res.destroy()
       return

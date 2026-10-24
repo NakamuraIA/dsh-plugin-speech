@@ -62,12 +62,17 @@ class FakeSourceBuffer {
 /** A MediaSource that opens on the next microtask and records its end. */
 class FakeMediaSource {
   static supported = true
+  /** Containers the fake claims to support; absent means `supported` answers for all. */
+  static supportedTypes: readonly string[] | undefined = undefined
   /** When set, `addSourceBuffer` refuses the way an unsupported codec does. */
   static addFailure: unknown
   /** What `readyState` reports; a closed source refuses another end-of-stream. */
   static readyStateValue = 'open'
   static readonly instances: FakeMediaSource[] = []
-  static isTypeSupported(): boolean { return FakeMediaSource.supported }
+  static isTypeSupported(type: string): boolean {
+    if (FakeMediaSource.supportedTypes === undefined) return FakeMediaSource.supported
+    return FakeMediaSource.supportedTypes.includes(type)
+  }
   readyState = FakeMediaSource.readyStateValue
   readonly buffers: FakeSourceBuffer[] = []
   readonly ended = vi.fn()
@@ -121,6 +126,7 @@ beforeEach(() => {
   FakeAudio.refusePlay = undefined
   FakeMediaSource.instances.length = 0
   FakeMediaSource.supported = true
+  FakeMediaSource.supportedTypes = undefined
   FakeMediaSource.addFailure = undefined
   FakeMediaSource.readyStateValue = 'open'
   fetchMock.mockReset()
@@ -146,6 +152,7 @@ describe('SpeechAudio streaming path', () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       text: 'Primeira frase. Segunda frase.',
       voice: 'voz',
+      format: 'webm',
     })
     expect(buffer().mode).toBe('sequence')
 
@@ -164,8 +171,21 @@ describe('SpeechAudio streaming path', () => {
     expect(FakeMediaSource.instances[0]?.ended).toHaveBeenCalledOnce()
   })
 
-  it('starts the element on the first frames only', async () => {
+  it('asks for MP3 when the engine streams MP3 but rejects WebM', async () => {
+    FakeMediaSource.supportedTypes = ['audio/mpeg']
     const stream = streamedResponse()
+    fetchMock.mockResolvedValue(stream.response)
+    const playing = new SpeechAudio().speak('Texto', undefined, () => {})
+    await stream.push('AAA')
+    await vi.waitFor(() => { expect(buffer().chunks.length).toBe(1) })
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ text: 'Texto', format: 'mp3' })
+    await stream.close()
+    await drained()
+    element().fire('ended')
+    await playing
+  })
+
+  it('starts the element on the first frames only', async () => {    const stream = streamedResponse()
     fetchMock.mockResolvedValue(stream.response)
     const playing = new SpeechAudio().speak('Texto', undefined, () => {})
     // The element exists only once the response headers are in; the reader is
@@ -290,7 +310,8 @@ describe('SpeechAudio streaming path', () => {
     expect(FakeAudio.instances).toHaveLength(0)
   })
 
-  it('reports a refused play', async () => {    const stream = streamedResponse()
+  it('reports a refused play', async () => {
+    const stream = streamedResponse()
     fetchMock.mockResolvedValue(stream.response)
     FakeAudio.refusePlay = new Error('autoplay bloqueado')
     const playing = new SpeechAudio().speak('Texto', undefined, () => {})
@@ -298,20 +319,27 @@ describe('SpeechAudio streaming path', () => {
     await expect(playing).rejects.toThrow('autoplay bloqueado')
   })
 
-  it('reports a buffer the browser refuses to create', async () => {
-    // The browser may refuse with an Error or with anything else it likes.
-    for (const refusal of ['codec recusado', new Error('codec recusado')]) {
-      const stream = streamedResponse()
-      fetchMock.mockResolvedValue(stream.response)
-      FakeMediaSource.addFailure = refusal
-      await expect(new SpeechAudio().speak('Texto', undefined, () => {})).rejects.toThrow('codec recusado')
-      await stream.close()
-    }
+  it('speaks the slow way when the engine accepts the type but refuses the buffer', async () => {
+    // Nothing has played yet, so the reply is still worth speaking: the sentence
+    // path is worse, not broken.
+    FakeMediaSource.addFailure = 'codec recusado'
+    fetchMock.mockImplementation(async () => new Response('AUDIO', { status: 200 }))
+    const ended = vi.fn()
+    const playing = new SpeechAudio().speak('Uma.', undefined, ended)
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+    element().fire('ended')
+    await playing
+    expect(ended).toHaveBeenCalledOnce()
+    // The abandoned stream attempt is the first call; the retry is the sentence,
+    // which asks for no particular encoding because it plays a whole blob.
+    expect(fetchMock.mock.calls.map(call => requestedText(call[1]))).toEqual(['Uma.', 'Uma.'])
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).not.toHaveProperty('format')
   })
 })
 
 describe('SpeechAudio fallbacks', () => {
-  it('speaks sentence by sentence when the browser cannot stream MP3', async () => {    FakeMediaSource.supported = false
+  it('speaks sentence by sentence when the browser cannot stream the reply', async () => {
+    FakeMediaSource.supported = false
     fetchMock.mockImplementation(async () => new Response('AUDIO', { status: 200 }))
     const ended = vi.fn()
     const playing = new SpeechAudio().speak('Uma. Duas.', undefined, ended)

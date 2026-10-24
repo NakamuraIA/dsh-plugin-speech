@@ -102,6 +102,8 @@ play as they arrive
 
 Synthesis lives on the host because a browser cannot hold an API key and cannot reach most services across CORS. The browser only posts text and plays bytes. Every editable leaf of the entry config is `.volatile()`, so a settings write lands in the running host without reloading it — the host reads the same value the browser wrote.
 
+The reply is carried as **WebM/Opus** when the browser can demux it and as MP3 otherwise, because as-it-arrives playback goes through `MediaSource` and engines disagree about containers: Chromium refuses MP3 there and accepts Opus. Only a browser with no usable `MediaSource` is spoken one sentence per request, and each of those pays for a fresh socket — audible as a pause between sentences. A voice that ends every sentence with a long silence of its own (some do, by design) still pauses there: that silence is in the audio, not in the transport.
+
 ## Development
 
 This repository builds on its own against the published `@deepseek-ai/*` packages; no harness checkout is involved:

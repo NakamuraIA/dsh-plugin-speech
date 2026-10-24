@@ -7,8 +7,12 @@
  * the first frames and never waits for the rest — the audio equivalent of
  * watching an answer stream in.
  *
- * A browser whose MediaSource cannot take MP3 falls back to one request per
- * sentence and blob playback, which still works but waits for each sentence.
+ * Which container MediaSource can demux differs by engine: Chromium refuses
+ * MP3 and takes WebM/Opus, others the other way round. The request names the one
+ * this browser can play, so a single socket still carries the whole reply. Only
+ * a browser with no usable MediaSource falls back to one request per sentence
+ * and blob playback, which still works but puts a WebSocket handshake, and its
+ * silence, inside every pause.
  */
 /** Per-request overrides the settings screen uses to preview an unsaved voice. */
 export interface SpeechOverrides {
@@ -47,6 +51,7 @@ export declare class SpeechAudio {
     /**
      * Stream one request's audio into a MediaSource-backed element.
      * @param text - the whole projected text.
+     * @param target - container this browser can demux, and the encoding to ask for.
      * @param overrides - preview overrides, when any.
      * @param generation - token this request belongs to.
      * @returns whether playback ran to the end under the same generation.

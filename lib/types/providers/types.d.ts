@@ -7,6 +7,13 @@
 import type { Readable } from 'node:stream';
 /** Provider identifier, matching the provider folder name. */
 export type SpeechProviderId = string;
+/**
+ * Audio encodings a caller may ask for. A browser can only play as-it-arrives
+ * audio through `MediaSource`, and which container that accepts differs by
+ * engine — Chromium takes WebM/Opus and refuses MP3 — so the caller names the
+ * encoding it can demux and the provider answers in it.
+ */
+export type SpeechFormat = 'mp3' | 'webm';
 /** One synthesis request, already resolved from the durable settings. */
 export interface SpeechRequest {
     /** Text to speak. */
@@ -15,6 +22,11 @@ export interface SpeechRequest {
     readonly voice: string;
     /** Provider-specific tuning; every provider reads only the keys it declares. */
     readonly tuning: Readonly<Record<string, unknown>>;
+    /**
+     * Encoding the caller can play. Absent means the provider's default, which is
+     * what a caller that buffers whole files rather than streams wants.
+     */
+    readonly format?: SpeechFormat;
 }
 /** Audio a provider returns for one request. */
 export interface SpeechAudio {

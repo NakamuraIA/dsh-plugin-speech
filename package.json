@@ -1,6 +1,6 @@
 {
   "name": "@nakamuraia/dsh-plugin-speech",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Read assistant replies aloud in DeepSeek Harness: text-to-speech providers with streaming playback.",
   "license": "MIT",
   "keywords": [

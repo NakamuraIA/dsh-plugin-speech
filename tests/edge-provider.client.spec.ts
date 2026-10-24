@@ -8,7 +8,10 @@ const edge = vi.hoisted(() => ({
 }))
 
 vi.mock('msedge-tts', () => ({
-  OUTPUT_FORMAT: { AUDIO_24KHZ_48KBITRATE_MONO_MP3: 'mp3-format' },
+  OUTPUT_FORMAT: {
+    AUDIO_24KHZ_48KBITRATE_MONO_MP3: 'mp3-format',
+    WEBM_24KHZ_16BIT_MONO_OPUS: 'webm-format',
+  },
   MsEdgeTTS: class {
     getVoices = edge.getVoices
     setMetadata = edge.setMetadata
@@ -48,6 +51,16 @@ describe('edge provider', () => {
     await expect(edgeProvider.voices?.()).resolves.toEqual([
       { id: 'pt-BR-AntonioNeural', name: 'Antonio', language: 'pt-BR', gender: 'Male' },
     ])
+  })
+
+  it('speaks MP3 unless the caller needs the container Chromium can stream', async () => {
+    const byDefault = await edgeProvider.synthesize({ text: 'Olá', voice: 'voz', tuning: {} }, {})
+    expect(byDefault.contentType).toBe('audio/mpeg')
+    expect(edge.setMetadata).toHaveBeenLastCalledWith('voz', 'mp3-format')
+
+    const streamable = await edgeProvider.synthesize({ text: 'Olá', voice: 'voz', tuning: {}, format: 'webm' }, {})
+    expect(streamable.contentType).toBe('audio/webm')
+    expect(edge.setMetadata).toHaveBeenLastCalledWith('voz', 'webm-format')
   })
 
   it('points the library at a socket URL signed with the accepted token', async () => {

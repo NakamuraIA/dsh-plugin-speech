@@ -7,17 +7,37 @@
  * the first frames and never waits for the rest — the audio equivalent of
  * watching an answer stream in.
  *
- * A browser whose MediaSource cannot take MP3 falls back to one request per
- * sentence and blob playback, which still works but waits for each sentence.
+ * Which container MediaSource can demux differs by engine: Chromium refuses
+ * MP3 and takes WebM/Opus, others the other way round. The request names the one
+ * this browser can play, so a single socket still carries the whole reply. Only
+ * a browser with no usable MediaSource falls back to one request per sentence
+ * and blob playback, which still works but puts a WebSocket handshake, and its
+ * silence, inside every pause.
  */
 
+import type { SpeechFormat } from '../providers/types.ts'
 import { splitRequests, splitSentences } from './sentences.ts'
 
 /** Route the host exposes for synthesis. */
 const SPEAK_ROUTE = '/speech/speak'
 
-/** Content type the host answers with, and the one MediaSource must accept. */
-const AUDIO_TYPE = 'audio/mpeg'
+/** One encoding whose container this browser can demux while it arrives. */
+interface Streamable {
+  /** Encoding to ask the host for. */
+  readonly format: SpeechFormat
+  /** Container and codec string MediaSource must be opened with. */
+  readonly mime: string
+}
+
+/**
+ * Containers worth asking for, most preferred first. WebM/Opus leads because
+ * Chromium's MediaSource accepts it and rejects MP3 — which is the difference
+ * between one continuous stream and a handshake per sentence.
+ */
+const STREAMABLE: readonly Streamable[] = [
+  { format: 'webm', mime: 'audio/webm; codecs="opus"' },
+  { format: 'mp3', mime: 'audio/mpeg' },
+]
 
 /** Per-request overrides the settings screen uses to preview an unsaved voice. */
 export interface SpeechOverrides {
@@ -30,11 +50,12 @@ export interface SpeechOverrides {
 }
 
 /**
- * Whether this browser can play encoded audio as it streams in.
- * @returns true when MediaSource accepts the host's audio type.
+ * The encoding this browser can play while it streams in.
+ * @returns the container to ask for, or undefined when MediaSource takes none of them.
  */
-function streamsAudio(): boolean {
-  return typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(AUDIO_TYPE)
+function streamable(): Streamable | undefined {
+  if (typeof MediaSource === 'undefined') return undefined
+  return STREAMABLE.find(candidate => MediaSource.isTypeSupported(candidate.mime))
 }
 
 /**
@@ -70,13 +91,14 @@ function limitOf(message: string): number | undefined {
 /**
  * Resolve once a buffer is ready to accept appends.
  * @param media - the MediaSource the audio element plays from.
+ * @param mime - container and codec the buffer is opened for.
  * @returns the source buffer, in sequence mode.
  */
-function openBuffer(media: MediaSource): Promise<SourceBuffer> {
+function openBuffer(media: MediaSource, mime: string): Promise<SourceBuffer> {
   return new Promise((resolve, reject) => {
     media.addEventListener('sourceopen', () => {
       try {
-        const buffer = media.addSourceBuffer(AUDIO_TYPE)
+        const buffer = media.addSourceBuffer(mime)
         // Raw MP3 frames carry no timestamps, so sequence mode is what lets
         // MediaSource stitch them; segments mode would reject the first append.
         buffer.mode = 'sequence'
@@ -135,8 +157,9 @@ export class SpeechAudio {
     const generation = ++this.generation
     this.dropPlayback()
     const single = requests.length === 1 ? requests[0] : undefined
-    const played = single !== undefined && streamsAudio()
-      ? await this.streamRequest(single, overrides, generation)
+    const target = streamable()
+    const played = single !== undefined && target !== undefined
+      ? await this.streamRequest(single, target, overrides, generation)
       : await this.playSentenceBySentence(splitSentences(text), overrides, generation)
     // Both paths answer false when a later stop or speak superseded them, so a
     // true answer is the only thing that reports an end.
@@ -167,19 +190,21 @@ export class SpeechAudio {
   /**
    * Stream one request's audio into a MediaSource-backed element.
    * @param text - the whole projected text.
+   * @param target - container this browser can demux, and the encoding to ask for.
    * @param overrides - preview overrides, when any.
    * @param generation - token this request belongs to.
    * @returns whether playback ran to the end under the same generation.
    */
   private async streamRequest(
     text: string,
+    target: Streamable,
     overrides: SpeechOverrides | undefined,
     generation: number,
   ): Promise<boolean> {
     const response = await fetch(SPEAK_ROUTE, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text, ...overrides }),
+      body: JSON.stringify({ text, format: target.format, ...overrides }),
     })
     if (!response.ok) {
       const message = await failureOf(response)
@@ -198,29 +223,38 @@ export class SpeechAudio {
     const element = new Audio(url)
     this.playing = element
     this.objectUrl = url
-    const buffer = await openBuffer(media)
-    const reader = body.getReader()
     let started = false
     try {
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (generation !== this.generation) {
-          await reader.cancel()
-          return false
-        }
-        if (value !== undefined && value.length > 0) {
-          await appendChunk(buffer, value)
-          if (!started) {
-            started = true
-            // The first frames are enough to begin: the element keeps playing
-            // while the rest of the reply is still being synthesized.
-            await element.play()
+      const buffer = await openBuffer(media, target.mime)
+      const reader = body.getReader()
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (generation !== this.generation) {
+            await reader.cancel()
+            return false
           }
+          if (value !== undefined && value.length > 0) {
+            await appendChunk(buffer, value)
+            if (!started) {
+              started = true
+              // The first frames are enough to begin: the element keeps playing
+              // while the rest of the reply is still being synthesized.
+              await element.play()
+            }
+          }
+          if (done) break
         }
-        if (done) break
+      } finally {
+        if (generation !== this.generation) this.releaseChunk(url)
       }
-    } finally {
-      if (generation !== this.generation) this.releaseChunk(url)
+    } catch (error) {
+      // An engine can accept the type and still refuse the bytes. Before any
+      // sound the reply is worth retrying the slow way; once it has started,
+      // anything else would speak the beginning twice.
+      this.releaseChunk(url)
+      if (started || generation !== this.generation) throw error
+      return await this.playSentenceBySentence(splitSentences(text), overrides, generation)
     }
     if (!started) return false
     if (media.readyState === 'open') media.endOfStream()
