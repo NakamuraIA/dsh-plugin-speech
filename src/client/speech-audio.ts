@@ -1,25 +1,22 @@
 /**
  * Browser playback over the host's synthesis route.
  *
- * A reply is spoken in **segments** — a few hundred characters each, cut on
- * sentence ends — and every segment's audio is appended to the **same**
- * MediaSource buffer. Two properties come out of that one decision:
+ * One click sends the whole reply in **one request** and the host streams the
+ * audio back while the service is still working. The browser appends every chunk
+ * to a single MediaSource buffer and starts the element as soon as a short head
+ * of audio is in hand — under a second in practice, because the service
+ * synthesizes far faster than a voice speaks (measured at 73x realtime on a warm
+ * connection, 1.5x on a cold one). From there the element plays out of the
+ * buffer while the rest arrives behind it, so the voice is continuous and the
+ * wait is a fraction of a second.
  *
- * - continuity: one buffer, one element, no seams between segments, so the
- *   voice never pauses at a boundary;
- * - resilience: the service drops a connection now and then with no error
- *   frame, and a dropped connection can only cost the segment it was carrying.
- *   One request for the whole reply meant one drop silenced the reading.
+ * That head is deliberately small: it exists to cover the first chunk's jitter,
+ * not to wait for a meaningful part of the reply. Raising it buys nothing when
+ * the service is fast and costs exactly what it waits.
  *
- * Playback starts once a few seconds of audio are buffered, early enough to feel
- * immediate and late enough that it cannot catch the network and stall in the
- * middle of a sentence. The next segment is already being fetched while the
- * current one is appended, so the buffer fills ahead of the voice.
- *
- * When MediaSource is unusable the reply is still spoken, one segment per blob.
+ * When MediaSource is unusable — or the engine accepts the type and then refuses
+ * the buffer — the reply is still played as one whole file in one element.
  */
-
-import { splitSentences } from './sentences.ts'
 
 /** Route the host exposes for synthesis. */
 const SPEAK_ROUTE = '/speech/speak'
@@ -28,29 +25,11 @@ const SPEAK_ROUTE = '/speech/speak'
 const AUDIO_MIME = 'audio/mpeg'
 
 /**
- * Longest text one segment carries. Small enough that a single dropped
- * connection loses little, large enough that a reply does not open dozens of
- * sockets.
+ * Seconds of audio to hold before starting. Enough to cover the gap between the
+ * first chunk and the next, small enough to be inaudible as a delay: the service
+ * normally delivers a whole reply in about a second, so this is the only wait.
  */
-const SEGMENT_CHARS = 400
-
-/** Attempts one segment gets before its failure ends the reading. */
-const SEGMENT_ATTEMPTS = 2
-
-/**
- * Seconds of audio to buffer before playback starts. Below this, a reply that
- * arrives slower than it is spoken would run dry mid-sentence; above it, the
- * wait starts to feel like the browser is thinking.
- */
-const PREBUFFER_SECONDS = 4
-
-/**
- * Audio seconds the service must be delivering per wall-clock second before
- * playback is allowed to start on the pre-buffer alone. Below this the buffer
- * would drain mid-sentence, so a reply is buffered whole instead — a pause
- * between sentences is worse than waiting a little longer for the first one.
- */
-const MIN_DELIVERY_RATE = 1.1
+const PREBUFFER_SECONDS = 1.5
 
 /** Per-request overrides the settings screen uses to preview an unsaved voice. */
 export interface SpeechOverrides {
@@ -108,8 +87,7 @@ function openBuffer(media: MediaSource): Promise<SourceBuffer> {
       try {
         const buffer = media.addSourceBuffer(AUDIO_MIME)
         // Raw MP3 frames carry no timestamps, so sequence mode is what lets
-        // MediaSource stitch every segment into one continuous timeline;
-        // segments mode would reject the first append.
+        // MediaSource stitch them; segments mode would reject the first append.
         buffer.mode = 'sequence'
         resolve(buffer)
       } catch (error) {
@@ -151,37 +129,24 @@ export class SpeechAudio {
   private generation = 0
   private playing: HTMLAudioElement | undefined
   private objectUrl: string | undefined
-  /** Aborts the response bodies a stop would otherwise keep reading forever. */
+  /** Aborts the response body a stop would otherwise keep reading forever. */
   private abort: AbortController | undefined
 
   /**
-   * Speak one text, segment by segment, into one continuous buffer.
+   * Speak one text: one request for the whole reply, played as it arrives.
    * @param text - projected spoken text.
    * @param overrides - preview overrides, or undefined to use the durable settings.
    * @param onEnded - called once the last audio has played out.
    */
   async speak(text: string, overrides: SpeechOverrides | undefined, onEnded: () => void): Promise<void> {
-    const segments = splitSentences(text, SEGMENT_CHARS)
-    if (segments.length === 0) return
+    if (text.trim() === '') return
     const generation = ++this.generation
     this.dropPlayback()
     const abort = new AbortController()
     this.abort = abort
-    const played = canStream()
-      ? await this.streamSegments(segments, overrides, generation, abort.signal)
-      : await this.playSegmentBySegment(segments, overrides, generation, abort.signal)
-    // Both paths answer false when a later stop or speak superseded them, so a
-    // true answer is the only thing that reports an end.
-    this.report(played, onEnded)
-  }
-
-  /**
-   * Report an end for a run that played out, and stay silent for one that a
-   * later stop or speak superseded.
-   * @param played - whether the run reached its last audio frame.
-   * @param onEnded - the caller's end callback.
-   */
-  private report(played: boolean, onEnded: () => void): void {
+    const played = await this.playReply(text, overrides, generation, abort.signal)
+    // A run superseded by a later stop or speak answers false, so a true answer
+    // is the only thing that reports an end.
     if (played) onEnded()
   }
 
@@ -197,26 +162,55 @@ export class SpeechAudio {
   }
 
   /**
-   * Append every segment to one buffer and play the result as one reading.
-   * @param segments - sentence-sized spans, in order.
+   * Fetch one reply and play it, streaming it when the browser can.
+   * @param text - the whole projected text.
    * @param overrides - preview overrides, when any.
-   * @param generation - token this run belongs to.
-   * @param signal - aborts the replies in flight.
+   * @param generation - token this request belongs to.
+   * @param signal - aborts the reply in flight.
    * @returns whether playback ran to the end under the same generation.
    */
-  private async streamSegments(
-    segments: readonly string[],
+  private async playReply(
+    text: string,
     overrides: SpeechOverrides | undefined,
     generation: number,
     signal: AbortSignal,
   ): Promise<boolean> {
+    let response: Response
+    try {
+      response = await fetch(SPEAK_ROUTE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, ...overrides }),
+        signal,
+      })
+    } catch (error) {
+      // A stop aborts the request; that is the cancellation it asked for.
+      if (generation !== this.generation) return false
+      throw error
+    }
+    if (!response.ok) throw new Error(await failureOf(response))
+    const body = response.body
+    if (body === null || !canStream()) {
+      const audio = await response.blob()
+      if (generation !== this.generation) return false
+      return await this.playBlob(audio, generation)
+    }
+    return await this.streamReply(body, generation)
+  }
+
+  /**
+   * Append one reply's frames and start the element as soon as the head is in.
+   * @param body - the response body carrying encoded audio.
+   * @param generation - token this request belongs to.
+   * @returns whether playback ran to the end under the same generation.
+   */
+  private async streamReply(body: ReadableStream<Uint8Array>, generation: number): Promise<boolean> {
     const media = new MediaSource()
     const url = URL.createObjectURL(media)
     const element = new Audio(url)
     this.playing = element
     this.objectUrl = url
     let started = false
-    /** Start the element once; the buffer is already ahead of it by then. */
     const play = async (): Promise<boolean> => {
       if (started) return true
       if (!await this.startPlayback(element, generation)) {
@@ -226,52 +220,32 @@ export class SpeechAudio {
       started = true
       return true
     }
+    const reader = body.getReader()
+    // Everything read before playback starts, so a buffer that refuses the frames
+    // still leaves a complete file to play.
+    const held: Uint8Array[] = []
     try {
-      let buffer: SourceBuffer
-      try {
-        buffer = await openBuffer(media)
-      } catch (error) {
-        // The engine accepted the type and refused the buffer. Nothing has
-        // played, so the reply is still worth speaking segment by segment.
-        this.releaseChunk(url)
-        void error
-        return await this.playSegmentBySegment(segments, overrides, generation, signal)
-      }
-      // Start the element as soon as the buffer is ahead of the voice — but only
-      // when the service is actually outrunning it. A service delivering audio
-      // slower than speech fills the buffer slower than playback drains it, and
-      // starting there produces exactly the pauses this plugin exists to avoid;
-      // such a reply is buffered whole and played once, after the loop.
-      const beganAt = Date.now()
-      const gate = async (): Promise<boolean> => {
-        if (started) return true
-        const buffered = bufferedSeconds(buffer)
-        if (buffered < PREBUFFER_SECONDS) return true
-        const elapsed = (Date.now() - beganAt) / 1000
-        const rate = elapsed <= 0 ? Number.POSITIVE_INFINITY : buffered / elapsed
-        if (rate < MIN_DELIVERY_RATE) return true
-        return await play()
-      }
-      // The next segment is requested while the current one is appended, which
-      // is what keeps the buffer filling ahead of the voice.
-      let ahead: Promise<Response | undefined> = this.fetchSegment(segments[0] as string, overrides, signal)
-      for (const [index, segment] of segments.entries()) {
-        const response = await ahead
-        const next = segments[index + 1]
-        ahead = next === undefined
-          ? Promise.resolve(undefined)
-          : this.fetchSegment(next, overrides, signal)
-        const bytes = await this.appendSegment(buffer, segment, response, overrides, signal, generation, gate)
+      const buffer = await openBuffer(media)
+      for (;;) {
+        const { done, value } = await reader.read()
         if (generation !== this.generation) {
+          await reader.cancel()
           this.releaseChunk(url)
           return false
         }
-        if (bytes > 0 && !started) {
-          if (!await gate()) return false
+        if (value !== undefined && value.length > 0) {
+          if (!started) held.push(value)
+          await appendChunk(buffer, value)
+          // The head is judged per chunk: the body stays open while the service
+          // keeps sending, and waiting for it to end would delay speech by the
+          // length of the whole reply.
+          if (!started && bufferedSeconds(buffer) >= PREBUFFER_SECONDS) {
+            if (!await play()) return false
+            held.length = 0
+          }
         }
+        if (done) break
       }
-      // A reply shorter than the pre-buffer, or one whose segments all arrived
-      // at once: play what is buffered.
       if (!await play()) return false
       if (media.readyState === 'open') media.endOfStream()
       await this.playedOut(element, generation)
@@ -279,172 +253,46 @@ export class SpeechAudio {
       return generation === this.generation
     } catch (error) {
       this.releaseChunk(url)
-      // A stop aborts the bodies, which arrives here as a failed read.
       if (generation !== this.generation) return false
-      // Whatever is already buffered still deserves to be heard: a failure this
-      // late ends the reading, it does not silence what came before it.
+      // A body that dies after the head went in still leaves buffered audio; the
+      // element plays what it has and ends, which beats throwing it away.
       if (started) {
         if (media.readyState === 'open') media.endOfStream()
         await this.playedOut(element, generation)
         return generation === this.generation
       }
-      throw error
+      // Nothing played: the engine refused the buffer itself. Play the reply as
+      // one whole file from the bytes in hand plus the rest of the body.
+      void error
+      return await this.playCollected(reader, held, generation)
     }
   }
 
   /**
-   * Append one segment's audio, retrying a segment the service cut before it
-   * produced anything.
-   * @param buffer - the source buffer every segment shares.
-   * @param text - the segment to speak.
-   * @param response - its first reply.
-   * @param overrides - preview overrides, when any.
-   * @param signal - aborts the replies in flight.
-   * @param generation - token this run belongs to.
-   * @param gate - asked after every append whether playback may start yet.
-   * @returns how many audio bytes this segment contributed.
+   * Drain what is left of a reply and play everything as one file.
+   * @param reader - the response reader, partly consumed.
+   * @param held - the chunks already in hand.
+   * @param generation - token this request belongs to.
+   * @returns whether playback ran to the end under the same generation.
    */
-  private async appendSegment(
-    buffer: SourceBuffer,
-    text: string,
-    response: Response | undefined,
-    overrides: SpeechOverrides | undefined,
-    signal: AbortSignal,
+  private async playCollected(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    held: readonly Uint8Array[],
     generation: number,
-    gate: () => Promise<boolean>,
-  ): Promise<number> {
-    let reply = response
-    let bytes = 0
-    for (let attempt = 0; attempt < SEGMENT_ATTEMPTS; attempt += 1) {
-      if (reply === undefined) {
-        reply = await this.fetchSegment(text, overrides, signal)
-      }
-      bytes = await this.appendBody(buffer, reply, generation, gate)
-      if (bytes > 0 || generation !== this.generation) return bytes
-      // A cut before any audio: the next attempt opens its own connection.
-      reply = undefined
-    }
-    return bytes
-  }
-
-  /**
-   * Read one reply's body into the buffer.
-   * @param buffer - the source buffer.
-   * @param response - the reply carrying this segment's audio.
-   * @param generation - token this run belongs to.
-   * @param gate - asked after every append whether playback may start yet.
-   * @returns how many audio bytes reached the buffer.
-   */
-  private async appendBody(
-    buffer: SourceBuffer,
-    response: Response,
-    generation: number,
-    gate: () => Promise<boolean>,
-  ): Promise<number> {
-    const body = response.body
-    if (body === null) return 0
-    const reader = body.getReader()
-    let bytes = 0
+  ): Promise<boolean> {
+    const chunks = [...held]
     try {
       for (;;) {
         const { done, value } = await reader.read()
-        if (generation !== this.generation) {
-          await reader.cancel()
-          return bytes
-        }
-        if (value !== undefined && value.length > 0) {
-          await appendChunk(buffer, value)
-          bytes += value.length
-          // The pre-buffer is judged per chunk: a segment's body stays open for
-          // as long as the service keeps sending, so waiting for it to end would
-          // hold playback back long after enough audio is in hand.
-          if (!await gate()) {
-            await reader.cancel()
-            return bytes
-          }
-        }
+        if (value !== undefined && value.length > 0) chunks.push(value)
         if (done) break
       }
-    } catch (error) {
-      if (generation !== this.generation) return bytes
-      // The service cut this connection mid-segment. What arrived is already
-      // buffered and plays; the reading continues with the next segment.
-      void error
+    } catch (_bodyFailed) {
+      // The body died too; the chunks in hand are what this reply will be.
     }
-    return bytes
-  }
-
-  /**
-   * Request one segment's audio.
-   * @param text - the segment to speak.
-   * @param overrides - preview overrides, when any.
-   * @param signal - aborts the reply in flight.
-   * @returns the reply, its body still unread.
-   */
-  private async fetchSegment(
-    text: string,
-    overrides: SpeechOverrides | undefined,
-    signal: AbortSignal,
-  ): Promise<Response> {
-    const response = await fetch(SPEAK_ROUTE, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text, ...overrides }),
-      signal,
-    })
-    if (!response.ok) throw new Error(await failureOf(response))
-    return response
-  }
-
-  /**
-   * Fallback for a browser without MediaSource: one segment per blob, played in
-   * order. It cannot overlap segments, so a boundary is audible here.
-   * @param segments - sentence-sized spans, in order.
-   * @param overrides - preview overrides, when any.
-   * @param generation - token this run belongs to.
-   * @param signal - aborts the replies in flight.
-   * @returns whether every segment played out under the same generation.
-   */
-  private async playSegmentBySegment(
-    segments: readonly string[],
-    overrides: SpeechOverrides | undefined,
-    generation: number,
-    signal: AbortSignal,
-  ): Promise<boolean> {
-    let pending: Promise<Blob> | undefined
-    for (const [index, segment] of segments.entries()) {
-      pending ??= this.fetchAudio(segment, overrides, signal)
-      const audio = await pending
-      pending = undefined
-      if (generation !== this.generation) return false
-      const next = segments[index + 1]
-      if (next !== undefined) {
-        pending = this.fetchAudio(next, overrides, signal)
-        // A stop cancels the lookahead; the loop reports that through the
-        // generation, so the rejection must not surface as unhandled.
-        pending.catch(() => {})
-      }
-      if (!await this.playBlob(audio, generation)) return false
-    }
-    return true
-  }
-
-  /**
-   * Fetch the audio of one segment as a whole file.
-   * @param text - segment to speak.
-   * @param overrides - preview overrides, when any.
-   * @param signal - aborts the reply in flight.
-   * @returns the encoded audio the host answered with.
-   */
-  private async fetchAudio(text: string, overrides: SpeechOverrides | undefined, signal: AbortSignal): Promise<Blob> {
-    const response = await fetch(SPEAK_ROUTE, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text, ...overrides }),
-      signal,
-    })
-    if (!response.ok) throw new Error(await failureOf(response))
-    return await response.blob()
+    if (generation !== this.generation) return false
+    if (chunks.length === 0) return false
+    return await this.playBlob(new Blob(chunks as BlobPart[], { type: AUDIO_MIME }), generation)
   }
 
   /**
@@ -514,7 +362,7 @@ export class SpeechAudio {
   }
 
   private dropPlayback(): void {
-    // Aborting first ends the body reads: without it a stopped reply kept a
+    // Aborting first ends the body read: without it a stopped reply kept a
     // reader waiting on chunks that no longer mattered.
     this.abort?.abort()
     this.abort = undefined

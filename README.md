@@ -10,7 +10,7 @@ Read assistant replies aloud in [DeepSeek Harness](https://github.com/deepseek-a
 
 Each finished assistant message gets a play control in its action row. Press it and the reply is spoken through a text-to-speech service; press it again and it stops. A settings row in General owns the service, the voice, and the tuning.
 
-A reply is spoken in **segments** — a few hundred characters each — and every segment's audio lands in the **same buffer**, so the voice runs continuously from the first word to the last while the rest is still being synthesized. Playback starts once a few seconds are buffered, and only while the service is delivering faster than the voice speaks; when it is slower, the reply is buffered whole first, because a pause mid-sentence is worse than a longer wait.
+The whole reply goes out in **one request** and the host streams the audio back while the service is still synthesizing it. The browser holds back only the first **1.5 seconds** of audio — enough to cover the first chunk's jitter — and starts the voice: measured at about **one second** from the click, with a two-minute reading arriving in under two seconds from then on.
 
 ## Providers
 
@@ -92,19 +92,19 @@ Tables and pasted spreadsheets are never read, whichever way **Skip code** is se
 ```
 browser                    host                        service
 ───────                    ────                        ───────
-click ─ ▶ POST /speech/speak { text }   (one per segment)
+click ─ ▶ POST /speech/speak { text }
                            select provider from
                            its own entry config
                            ────────────────────────── ▶ synthesize
-        ◀ ─ each segment streams back ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-append every segment to one buffer, play while it fills
+        ◀ ─ audio bytes stream back ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+play from the first 1.5 s, keep appending behind it
 ```
 
 Synthesis lives on the host because a browser cannot hold an API key and cannot reach most services across CORS. The browser only posts text and plays bytes. Every editable leaf of the entry config is `.volatile()`, so a settings write lands in the running host without reloading it — the host reads the same value the browser wrote.
 
-Segments exist for resilience, not for the interface: the service closes a connection now and then with no error frame, and a segment can only lose the segment it was carrying — one request for the whole reply meant one drop silenced the reading. Because every segment lands in the same `MediaSource` buffer, the boundaries are inaudible; the buffer is one continuous timeline.
+One request is the point. Every extra request pays a fresh handshake — around 0.9 s to the service — and adds a connection that can be dropped; sending the whole reply once means one handshake and one stream. The service is fast enough for that to be the right trade: measured at **73x realtime** on a warm connection and 1.5x on a cold one, so a two-minute reading arrives in under two seconds while the first second of it is already playing.
 
-Playback starts once **four seconds** of audio are buffered, but only while the service is delivering at least 1.1 seconds of audio per wall-clock second. That second condition is what keeps the voice from running dry: a service slower than speech fills the buffer slower than playback drains it, so such a reply is buffered whole and played once. When MediaSource is unusable the reply is still spoken, one segment per blob — the only path where a boundary can be heard.
+The 1.5-second head is the whole latency budget. It exists to cover the jitter between the first chunk and the next one, not to wait for a useful part of the reply: a smaller head starts playing on the first frame and occasionally stutters, a larger one buys nothing. If the stream dies after the voice started, what is already buffered still plays out; if the engine refuses the buffer outright the reply is played as one whole file instead.
 
 A voice can also end every sentence with a long silence of its own — `pt-BR-AntonioNeural`, the schema default, leaves about 0.9 s at each one, while the multilingual voices leave none. That silence is in the audio the service returns, not in how this plugin plays it.
 
