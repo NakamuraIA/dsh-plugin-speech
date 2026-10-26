@@ -7,6 +7,7 @@
 
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts'
 import { synthUrl } from './gec.ts'
+import { speechSsml } from './ssml.ts'
 import type { ProviderCredentials, SpeechAudio, SpeechProvider, SpeechRequest, SpeechVoice } from '../types.ts'
 
 /** Provider folder name and settings key. */
@@ -48,15 +49,6 @@ function number(value: unknown, fallback: number, min: number, max: number): num
   return Math.min(max, Math.max(min, parsed))
 }
 
-/**
- * Format one percentage delta the way Edge's SSML expects it.
- * @param value - percentage from settings.
- * @returns a signed percentage literal.
- */
-function percent(value: number): string {
-  return `${value >= 0 ? '+' : ''}${value}%`
-}
-
 /** The Edge read-aloud provider. */
 export const edgeProvider: SpeechProvider = {
   id: ID,
@@ -82,13 +74,10 @@ export const edgeProvider: SpeechProvider = {
     const volume = number(request.tuning['volume'], 0, -100, 100)
     const pitch = number(request.tuning['pitch'], 0, -100, 100)
     const tts = new MsEdgeTTS()
+    // The metadata call is what opens the connection and fixes the voice; the
+    // markup then goes out as it is, without the library's template around it.
     await tts.setMetadata(voice, FORMAT)
-    // Prosody rides the request, so one client instance serves every tuning.
-    const { audioStream } = tts.toStream(request.text, {
-      rate: percent(rate),
-      volume: percent(volume),
-      pitch: `${pitch >= 0 ? '+' : ''}${pitch}Hz`,
-    })
+    const { audioStream } = tts.rawToStream(speechSsml(request.text, voice, { rate, volume, pitch }))
     return { stream: audioStream, contentType: CONTENT_TYPE }
   },
 }

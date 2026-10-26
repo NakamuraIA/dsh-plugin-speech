@@ -8,12 +8,22 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
+import type { SpeechAudio } from './providers/types.ts'
 import { selectSpeech, type SpeechOverrides } from './selector.ts'
 import { MAX_TEXT_CHARS } from './speech-limits.ts'
 import type { SpeechSettings } from './settings.ts'
 
 /** Largest request body accepted; one reply is far below this. */
 const MAX_BODY_BYTES = 256 * 1024
+
+/**
+ * Attempts one synthesis gets before the route reports a failure. The service
+ * closes a connection without audio often enough that one try is a coin flip.
+ */
+const SYNTHESIS_ATTEMPTS = 3
+
+/** Pause between attempts: a failed connection is already gone, this is just courtesy. */
+const RETRY_DELAY_MS = 200
 
 /** Body shape the browser posts. */
 interface SpeakBody {
@@ -105,13 +115,34 @@ export async function serveSpeechRequest(
     return
   }
   try {
-    const audio = await selected.provider.synthesize(selected.request, {})
-    const chunks = audio.stream[Symbol.asyncIterator]()
+    // The service drops connections on its own schedule: a turn opens, then the
+    // socket closes before any audio and without an error frame. Nothing was
+    // sent to the browser at that point, so the whole attempt is simply repeated
+    // on a fresh connection, which is what makes the difference between a silent
+    // failure and a reading.
+    let attempt = 0
+    let audio: SpeechAudio | undefined
+    let chunks: AsyncIterator<unknown> | undefined
+    let first: IteratorResult<unknown> | undefined
+    for (; attempt < SYNTHESIS_ATTEMPTS; attempt += 1) {
+      try {
+        audio = await selected.provider.synthesize(selected.request, {})
+        chunks = audio.stream[Symbol.asyncIterator]()
+        first = await chunks.next()
+        break
+      } catch (error) {
+        audio?.stream.destroy()
+        if (attempt === SYNTHESIS_ATTEMPTS - 1) throw error
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
+      }
+    }
+    if (audio === undefined || chunks === undefined || first === undefined) {
+      throw new Error('synthesis produced no attempt')
+    }
     // Commit the response only once the service has produced audio. Committing
     // first would turn a provider that fails on its very first frame into an
     // empty 200 — silence with nothing the browser can report — which is what a
     // dropped handshake used to look like here.
-    const first = await chunks.next()
     res.writeHead(200, {
       'content-type': audio.contentType,
       // Audio is already compressed and is consumed once: never deflate it, and

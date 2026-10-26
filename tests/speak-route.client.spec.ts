@@ -4,14 +4,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SpeechSettings } from '../src/settings.ts'
 
-const edge = vi.hoisted(() => ({ toStream: vi.fn(), setMetadata: vi.fn(), getVoices: vi.fn() }))
+const edge = vi.hoisted(() => ({ rawToStream: vi.fn(), setMetadata: vi.fn(), getVoices: vi.fn() }))
 
 vi.mock('msedge-tts', () => ({
   OUTPUT_FORMAT: { AUDIO_24KHZ_48KBITRATE_MONO_MP3: 'mp3-format' },
   MsEdgeTTS: class {
     getVoices = edge.getVoices
     setMetadata = edge.setMetadata
-    toStream = edge.toStream
+    rawToStream = edge.rawToStream
   },
 }))
 
@@ -64,7 +64,7 @@ function audioStream(bytes = 'AUDIOBYTES'): PassThrough {
 beforeEach(() => {
   vi.clearAllMocks()
   edge.setMetadata.mockResolvedValue(undefined)
-  edge.toStream.mockReturnValue({ audioStream: audioStream(), metadataStream: null })
+  edge.rawToStream.mockReturnValue({ audioStream: audioStream(), metadataStream: null })
 })
 
 describe('POST /speech/speak', () => {
@@ -133,7 +133,7 @@ describe('POST /speech/speak', () => {
     expect(out.status).toBe(200)
     expect(out.headers['content-type']).toBe('audio/mpeg')
     expect(out.headers['cache-control']).toBe('no-store, no-transform')
-    expect(edge.toStream).toHaveBeenCalledWith('Olá', { rate: '+5%', volume: '+0%', pitch: '+0Hz' })
+    expect(String(edge.rawToStream.mock.calls[0]?.[0])).toContain("rate='+5%' volume='+0%' pitch='+0Hz'")
     expect(out.body.toString()).toBe('AUDIOBYTES')
   })
 
@@ -160,9 +160,24 @@ describe('POST /speech/speak', () => {
     expect(out.body.toString()).toContain('caiu feio')
   })
 
+  it('retries a synthesis the service closed before any audio', async () => {
+    // The service drops a connection now and then. Nothing reached the browser on
+    // the failed attempt, so the route simply asks again on a fresh connection.
+    edge.setMetadata
+      .mockRejectedValueOnce(new Error('Stream closed before the synthesis completed'))
+      .mockResolvedValue(undefined)
+    const out = response()
+    const finished = new Promise<void>((resolve) => { out.res.on('finish', () => { resolve() }) })
+    await serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, reader())
+    await finished
+    expect(out.status).toBe(200)
+    expect(edge.setMetadata).toHaveBeenCalledTimes(2)
+    expect(out.body.toString()).toBe('AUDIOBYTES')
+  })
+
   it('answers 502 when the provider fails before its first chunk', async () => {
     const failing = new PassThrough()
-    edge.toStream.mockReturnValue({ audioStream: failing, metadataStream: null })
+    edge.rawToStream.mockReturnValue({ audioStream: failing, metadataStream: null })
     const out = response()
     const served = serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, reader())
     failing.destroy(new Error('conexão caiu'))
@@ -175,7 +190,7 @@ describe('POST /speech/speak', () => {
 
   it('tears the response down when the stream fails after audio started', async () => {
     const failing = new PassThrough()
-    edge.toStream.mockReturnValue({ audioStream: failing, metadataStream: null })
+    edge.rawToStream.mockReturnValue({ audioStream: failing, metadataStream: null })
     const out = response()
     const destroyed = new Promise<void>((resolve) => { out.res.on('close', () => { resolve() }) })
     const served = serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, reader())
