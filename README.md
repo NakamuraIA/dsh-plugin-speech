@@ -10,7 +10,7 @@ Read assistant replies aloud in [DeepSeek Harness](https://github.com/deepseek-a
 
 Each finished assistant message gets a play control in its action row. Press it and the reply is spoken through a text-to-speech service; press it again and it stops. A settings row in General owns the service, the voice, and the tuning.
 
-The whole reply goes out in **one request** and the host streams the audio back while the service is still synthesizing it. Playback starts once a few seconds are buffered — about a second for a typical reply — and from there it is one continuous voice to the last word: the pre-buffer is what keeps it from running dry in the middle of a sentence.
+A reply is spoken in **segments** — a few hundred characters each — and every segment's audio lands in the **same buffer**, so the voice runs continuously from the first word to the last while the rest is still being synthesized. Playback starts once a few seconds are buffered, and only while the service is delivering faster than the voice speaks; when it is slower, the reply is buffered whole first, because a pause mid-sentence is worse than a longer wait.
 
 ## Providers
 
@@ -92,19 +92,19 @@ Tables and pasted spreadsheets are never read, whichever way **Skip code** is se
 ```
 browser                    host                        service
 ───────                    ────                        ───────
-click ─ ▶ POST /speech/speak { text }
+click ─ ▶ POST /speech/speak { text }   (one per segment)
                            select provider from
                            its own entry config
                            ────────────────────────── ▶ synthesize
-        ◀ ─ audio bytes stream back ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-buffer four seconds, then play while it keeps arriving
+        ◀ ─ each segment streams back ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+append every segment to one buffer, play while it fills
 ```
 
 Synthesis lives on the host because a browser cannot hold an API key and cannot reach most services across CORS. The browser only posts text and plays bytes. Every editable leaf of the entry config is `.volatile()`, so a settings write lands in the running host without reloading it — the host reads the same value the browser wrote.
 
-Playback goes through `MediaSource` and starts once **four seconds** of audio are buffered, then plays while the rest arrives. That pre-buffer is the whole design: streaming straight away stalled whenever the service synthesized slower than the voice spoke, and waiting for the whole file was seamless but could take ten seconds. Four seconds is early enough to feel immediate — measured at about a second on a warm connection — and late enough that nothing runs dry mid-sentence. When a link in that chain is missing (no `MediaSource`, a container the engine refuses, a buffer that dies mid-reply) the reply is still played, as one whole file assembled from the bytes in hand.
+Segments exist for resilience, not for the interface: the service closes a connection now and then with no error frame, and a segment can only lose the segment it was carrying — one request for the whole reply meant one drop silenced the reading. Because every segment lands in the same `MediaSource` buffer, the boundaries are inaudible; the buffer is one continuous timeline.
 
-Only a reply larger than one request may carry (20 000 characters) is spoken sentence by sentence, which is where a pause between sentences can still be heard.
+Playback starts once **four seconds** of audio are buffered, but only while the service is delivering at least 1.1 seconds of audio per wall-clock second. That second condition is what keeps the voice from running dry: a service slower than speech fills the buffer slower than playback drains it, so such a reply is buffered whole and played once. When MediaSource is unusable the reply is still spoken, one segment per blob — the only path where a boundary can be heard.
 
 A voice can also end every sentence with a long silence of its own — `pt-BR-AntonioNeural`, the schema default, leaves about 0.9 s at each one, while the multilingual voices leave none. That silence is in the audio the service returns, not in how this plugin plays it.
 

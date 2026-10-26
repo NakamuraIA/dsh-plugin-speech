@@ -1,8 +1,6 @@
 /**
- * Text chunking for read-aloud. A reply is normally sent as one request, so the
- * provider can stream audio while it works through the text; chunking only
- * applies to a reply larger than one request may carry, and to the fallback
- * path used when the browser cannot stream encoded audio.
+ * Text chunking for read-aloud: every synthesis request carries one span, so a
+ * dropped connection can only cost the segment it was carrying.
  */
 /**
  * Split one text into sentence-sized spans.
@@ -11,11 +9,4 @@
  * @returns speakable spans, never empty strings.
  */
 export declare function splitSentences(text: string, limit?: number): readonly string[];
-/**
- * Pack one text into requests: a single span when it fits, otherwise several
- * spans cut on sentence ends.
- * @param text - projected spoken text.
- * @returns one or more speakable requests, never empty strings.
- */
-export declare function splitRequests(text: string): readonly string[];
 //# sourceMappingURL=sentences.d.ts.map

@@ -1,13 +1,9 @@
 /**
- * Speech request bounds shared by the host route and the browser client. Both
- * faces must agree, so the numbers live here instead of in each side: the
- * browser packs its text to this size and the host refuses anything larger.
+ * Bound on one synthesis request. The browser sends a few hundred characters per
+ * request by design — a dropped connection then costs only that segment — so this
+ * cap exists for everything else that posts to the route: a request far larger
+ * than a segment is a bug or an abusive caller, not a reply.
  */
-/**
- * Longest text one synthesis request may carry, in characters. A whole reply
- * fits in one request by design — streaming needs the provider to receive the
- * full text so it can start emitting audio for its first sentence — and the cap
- * only bounds a single request.
- */
+/** Longest text one synthesis request may carry, in characters. */
 export declare const MAX_TEXT_CHARS = 20000;
 //# sourceMappingURL=speech-limits.d.ts.map

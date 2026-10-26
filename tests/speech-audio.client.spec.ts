@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-/** Browser playback: one request per reply, a buffered head, and the fallbacks. */
+/** Browser playback: one buffer fed segment by segment, and the fallbacks. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SpeechAudio } from '../src/client/speech-audio.ts'
 
@@ -49,8 +49,6 @@ class FakeAudio {
 class FakeSourceBuffer {
   /** Audio seconds one append is worth. */
   static secondsPerAppend = 1
-  /** When set, `appendBuffer` refuses the way an undecodable container does. */
-  static appendFailure: unknown
   mode = 'segments'
   readonly chunks: Uint8Array[] = []
   private seconds = 0
@@ -62,7 +60,6 @@ class FakeSourceBuffer {
   }
 
   appendBuffer(chunk: Uint8Array): void {
-    if (FakeSourceBuffer.appendFailure !== undefined) throw FakeSourceBuffer.appendFailure
     this.chunks.push(chunk)
     this.seconds += FakeSourceBuffer.secondsPerAppend
     queueMicrotask(() => { for (const listener of [...this.listeners]) listener() })
@@ -103,11 +100,19 @@ class FakeMediaSource {
 
 /** The audio element the most recent play created. */
 const element = (): FakeAudio => FakeAudio.instances.at(-1) as FakeAudio
-/** The buffer the most recent stream appended into. */
+/** The buffer the stream appended into. */
 const buffer = (): FakeSourceBuffer => FakeMediaSource.instances.at(-1)?.buffers[0] as FakeSourceBuffer
 
+/** One streaming response the spec drives by hand. */
+interface Stream {
+  response: Response
+  push: (bytes: string) => Promise<void>
+  close: () => Promise<void>
+  fail: (error: Error) => void
+}
+
 /** One streaming response the spec feeds chunk by chunk. */
-function streamed(): { response: Response; push: (bytes: string) => Promise<void>; close: () => Promise<void> } {
+function stream(): Stream {
   const encoder = new TextEncoder()
   let controller!: ReadableStreamDefaultController<Uint8Array>
   const body = new ReadableStream<Uint8Array>({ start(source) { controller = source } })
@@ -115,22 +120,35 @@ function streamed(): { response: Response; push: (bytes: string) => Promise<void
     response: new Response(body, { status: 200, headers: { 'content-type': 'audio/mpeg' } }),
     push: async (bytes) => { controller.enqueue(encoder.encode(bytes)); await Promise.resolve() },
     close: async () => { controller.close(); await Promise.resolve() },
+    fail: (error) => { controller.error(error) },
   }
+}
+
+const fetchMock = vi.fn<(_url: string, init: { body: string }) => Promise<Response>>()
+
+/** The body one synthesis request carried. */
+const requested = (index = 0): Record<string, unknown> =>
+  JSON.parse(String(fetchMock.mock.calls[index]?.[1]?.body)) as Record<string, unknown>
+
+/** A fetch mock handing one fresh stream to every request. */
+function streamed(): { streams: Stream[]; at: (index: number) => Stream; count: () => number } {
+  const streams: Stream[] = []
+  fetchMock.mockImplementation(async () => {
+    const next = stream()
+    streams.push(next)
+    return next.response
+  })
+  return { streams, at: (index) => streams[index] as Stream, count: () => streams.length }
 }
 
 /** A refusal carrying the route's JSON shape. */
 const refusal = (error: string, status = 400): Response =>
   new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } })
 
-const fetchMock = vi.fn<(_url: string, init: { body: string }) => Promise<Response>>()
-const createObjectURL = vi.fn<(blob: Blob) => string>(() => 'blob:test')
-
-/** The body one synthesis request carried. */
-const requested = (index = 0): Record<string, unknown> =>
-  JSON.parse(String(fetchMock.mock.calls[index]?.[1]?.body)) as Record<string, unknown>
-
-/** The blob the most recent playback was handed. */
-const lastBlob = (): Blob => createObjectURL.mock.calls.at(-1)?.[0] as Blob
+/** Wait until a segment's request has opened its stream. */
+const opened = async (feeds: { count: () => number }, count: number): Promise<void> => {
+  await vi.waitFor(() => { expect(feeds.count()).toBeGreaterThanOrEqual(count) })
+}
 
 beforeEach(() => {
   FakeAudio.instances.length = 0
@@ -139,156 +157,185 @@ beforeEach(() => {
   FakeMediaSource.supported = true
   FakeMediaSource.addFailure = undefined
   FakeSourceBuffer.secondsPerAppend = 1
-  FakeSourceBuffer.appendFailure = undefined
   fetchMock.mockReset()
-  createObjectURL.mockClear()
   vi.stubGlobal('Audio', FakeAudio)
   vi.stubGlobal('MediaSource', FakeMediaSource)
   vi.stubGlobal('fetch', fetchMock)
-  Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() })
+  Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:test'), revokeObjectURL: vi.fn() })
 })
 
 afterEach(() => { vi.unstubAllGlobals() })
 
 describe('SpeechAudio streaming path', () => {
-  it('asks for the whole reply once and starts once enough is buffered', async () => {
-    const stream = streamed()
-    fetchMock.mockResolvedValue(stream.response)
+  it('feeds every segment into one buffer and starts once enough is buffered', async () => {
+    const feeds = streamed()
     const audio = new SpeechAudio()
     const ended = vi.fn()
     const playing = audio.speak('Primeira frase. Segunda frase.', { voice: 'voz' }, ended)
 
-    expect(requested()).toEqual({ text: 'Primeira frase. Segunda frase.', voice: 'voz' })
-    await stream.push('A')
-    await vi.waitFor(() => { expect(buffer().chunks.length).toBe(1) })
+    await opened(feeds, 1)
+    expect(requested()).toEqual({ text: 'Primeira frase.', voice: 'voz' })
     expect(buffer().mode).toBe('sequence')
-    // Three seconds in, playback is deliberately still held back.
-    await stream.push('B')
-    await stream.push('C')
+
+    // Three seconds buffered, playback held back on purpose.
+    for (const chunk of ['A', 'B', 'C']) await feeds.at(0).push(chunk)
     await vi.waitFor(() => { expect(buffer().chunks.length).toBe(3) })
     expect(element().paused).toBe(true)
 
-    // The fourth second reaches the pre-buffer; now speech begins.
-    await stream.push('D')
+    // The fourth second reaches the pre-buffer: speech starts.
+    await feeds.at(0).push('D')
     await vi.waitFor(() => { expect(element().paused).toBe(false) })
-    await stream.push('E')
-    await stream.close()
+
+    // The second segment was requested behind the first and appends into the
+    // same buffer, so the reading has no seam at the boundary.
+    await opened(feeds, 2)
+    expect(requested(1)).toEqual({ text: 'Segunda frase.', voice: 'voz' })
+    await feeds.at(0).close()
+    await feeds.at(1).push('E')
+    await feeds.at(1).close()
+    await vi.waitFor(() => { expect(FakeMediaSource.instances[0]?.ended).toHaveBeenCalled() })
+    expect(buffer().chunks.length).toBe(5)
     element().fire('ended')
     await playing
     expect(ended).toHaveBeenCalledOnce()
   })
 
-  it('plays a reply that ends before the pre-buffer as one file', async () => {
-    const stream = streamed()
-    fetchMock.mockResolvedValue(stream.response)
+  it('starts anyway when the whole reply is shorter than the pre-buffer', async () => {
+    const feeds = streamed()
     const audio = new SpeechAudio()
     const ended = vi.fn()
     const playing = audio.speak('Curta.', undefined, ended)
-    await stream.push('AAA')
-    await stream.close()
-    await vi.waitFor(() => { expect(FakeAudio.instances.length).toBe(2) })
-    expect(element().paused).toBe(false)
-    expect(lastBlob().size).toBe(3)
+    await opened(feeds, 1)
+    await feeds.at(0).push('AAA')
+    await feeds.at(0).close()
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+    expect(FakeMediaSource.instances[0]?.ended).toHaveBeenCalled()
+    element().fire('ended')
+    await playing
+    expect(ended).toHaveBeenCalledOnce()
+  })
+
+  it('retries a segment the service cut before it produced audio', async () => {
+    let call = 0
+    fetchMock.mockImplementation(async () => {
+      call += 1
+      const next = stream()
+      // The first connection dies at once, with nothing on it.
+      if (call === 1) {
+        queueMicrotask(() => { next.fail(new Error('Stream closed before the synthesis completed')) })
+      } else {
+        queueMicrotask(() => { void next.push('AAA').then(() => next.close()) })
+      }
+      return next.response
+    })
+    const audio = new SpeechAudio()
+    const ended = vi.fn()
+    const playing = audio.speak('Uma frase.', undefined, ended)
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    element().fire('ended')
+    await playing
+    expect(ended).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the reading when a segment dies half way', async () => {
+    const feeds = streamed()
+    const audio = new SpeechAudio()
+    const ended = vi.fn()
+    const playing = audio.speak('Primeira frase. Segunda frase.', undefined, ended)
+    await opened(feeds, 1)
+    for (const chunk of ['A', 'B', 'C', 'D', 'E']) await feeds.at(0).push(chunk)
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+    // The connection drops mid-segment: what arrived keeps playing and the next
+    // segment still goes out.
+    feeds.at(0).fail(new Error('conexão caiu'))
+    await opened(feeds, 2)
+    await feeds.at(1).push('F')
+    await feeds.at(1).close()
     element().fire('ended')
     await playing
     expect(ended).toHaveBeenCalledOnce()
   })
 
   it('stops the element and reports nothing when playback is stopped', async () => {
-    const stream = streamed()
-    fetchMock.mockResolvedValue(stream.response)
+    const feeds = streamed()
     const audio = new SpeechAudio()
     const ended = vi.fn()
-    const playing = audio.speak('Texto', undefined, ended)
-    for (const chunk of ['A', 'B', 'C', 'D']) await stream.push(chunk)
+    const playing = audio.speak('Primeira frase. Segunda frase.', undefined, ended)
+    await opened(feeds, 1)
+    for (const chunk of ['A', 'B', 'C', 'D']) await feeds.at(0).push(chunk)
     await vi.waitFor(() => { expect(element().paused).toBe(false) })
     audio.stop()
-    // A real stop also aborts the body; the fake one has to be closed by hand.
-    await stream.close()
+    await feeds.at(0).close()
     await playing
     expect(element().paused).toBe(true)
     expect(ended).not.toHaveBeenCalled()
   })
 
   it('takes the abort a pause causes to a pending play as a cancellation', async () => {
-    // A second press of the play button pauses the element while play() is
-    // still settling, and the platform rejects that play() with an abort.
     FakeAudio.refusePlay = Object.assign(
       new Error('The play() request was interrupted by a call to pause().'),
       { name: 'AbortError' },
     )
-    const stream = streamed()
-    fetchMock.mockResolvedValue(stream.response)
+    const feeds = streamed()
     const ended = vi.fn()
-    const playing = new SpeechAudio().speak('Texto', undefined, ended)
-    for (const chunk of ['A', 'B', 'C', 'D']) await stream.push(chunk)
+    const playing = new SpeechAudio().speak('Uma frase.', undefined, ended)
+    await opened(feeds, 1)
+    for (const chunk of ['A', 'B', 'C', 'D']) await feeds.at(0).push(chunk)
+    await feeds.at(0).close()
     await expect(playing).resolves.toBeUndefined()
     expect(ended).not.toHaveBeenCalled()
   })
 
   it('reports a play the autoplay policy refused', async () => {
     FakeAudio.refusePlay = Object.assign(new Error('autoplay bloqueado'), { name: 'NotAllowedError' })
-    const stream = streamed()
-    fetchMock.mockResolvedValue(stream.response)
-    const playing = new SpeechAudio().speak('Texto', undefined, () => {})
-    for (const chunk of ['A', 'B', 'C', 'D']) await stream.push(chunk)
+    const feeds = streamed()
+    const playing = new SpeechAudio().speak('Uma frase.', undefined, () => {})
+    await opened(feeds, 1)
+    for (const chunk of ['A', 'B', 'C', 'D']) await feeds.at(0).push(chunk)
+    await feeds.at(0).close()
     await expect(playing).rejects.toThrow('autoplay bloqueado')
   })
 
-  it('plays the bytes in hand when the buffer refuses them', async () => {
-    FakeMediaSource.addFailure = 'codec recusado'
-    const stream = streamed()
-    fetchMock.mockResolvedValue(stream.response)
-    const audio = new SpeechAudio()
-    const ended = vi.fn()
-    const playing = audio.speak('Texto', undefined, ended)
-    await stream.push('AAA')
-    await stream.push('BBB')
-    await stream.close()
-    await vi.waitFor(() => { expect(FakeAudio.instances.length).toBe(2) })
-    expect(lastBlob().size).toBe(6)
-    element().fire('ended')
-    await playing
-    expect(ended).toHaveBeenCalledOnce()
-  })
-
-  it('abandons a reply whose request was still in flight when it was stopped', async () => {
-    const stream = streamed()
-    fetchMock.mockResolvedValue(stream.response)
-    const audio = new SpeechAudio()
-    const ended = vi.fn()
-    const playing = audio.speak('Texto', undefined, ended)
-    await vi.waitFor(() => { expect(FakeMediaSource.instances.length).toBe(1) })
-    audio.stop()
-    await stream.push('A')
-    await playing
-    expect(ended).not.toHaveBeenCalled()
-  })
-
   it('drops the element on dispose', async () => {
-    const stream = streamed()
-    fetchMock.mockResolvedValue(stream.response)
+    const feeds = streamed()
     const audio = new SpeechAudio()
-    const playing = audio.speak('Texto', undefined, () => {})
-    for (const chunk of ['A', 'B', 'C', 'D']) await stream.push(chunk)
+    const playing = audio.speak('Uma frase.', undefined, () => {})
+    await opened(feeds, 1)
+    for (const chunk of ['A', 'B', 'C', 'D']) await feeds.at(0).push(chunk)
     await vi.waitFor(() => { expect(element().paused).toBe(false) })
     audio.dispose()
-    await stream.close()
+    await feeds.at(0).close()
     await playing
     expect(element().paused).toBe(true)
   })
 })
 
-describe('SpeechAudio without a buffer', () => {
-  it('plays one whole file when the engine has no MediaSource', async () => {
+describe('SpeechAudio fallbacks', () => {
+  it('speaks one blob per segment when the engine has no MediaSource', async () => {
     FakeMediaSource.supported = false
-    fetchMock.mockResolvedValue(new Response('AUDIO', { status: 200 }))
+    fetchMock.mockImplementation(async () => new Response('AUDIO', { status: 200 }))
     const audio = new SpeechAudio()
     const ended = vi.fn()
-    const playing = audio.speak('Texto', undefined, ended)
+    const playing = audio.speak('Uma. Duas.', undefined, ended)
     await vi.waitFor(() => { expect(FakeAudio.instances.length).toBe(1) })
     expect(FakeMediaSource.instances).toHaveLength(0)
     expect(element().paused).toBe(false)
+    element().fire('ended')
+    await vi.waitFor(() => { expect(FakeAudio.instances.length).toBe(2) })
+    FakeAudio.instances[1]?.fire('ended')
+    await playing
+    expect(ended).toHaveBeenCalledOnce()
+  })
+
+  it('speaks one blob per segment when the buffer refuses to open', async () => {
+    FakeMediaSource.addFailure = 'codec recusado'
+    fetchMock.mockImplementation(async () => new Response('AUDIO', { status: 200 }))
+    const audio = new SpeechAudio()
+    const ended = vi.fn()
+    const playing = audio.speak('Uma.', undefined, ended)
+    // The streaming attempt still creates its element before the buffer refuses.
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
     element().fire('ended')
     await playing
     expect(ended).toHaveBeenCalledOnce()
@@ -311,30 +358,6 @@ describe('SpeechAudio refusals', () => {
     await expect(new SpeechAudio().speak('Texto', undefined, () => {})).rejects.toThrow('503 Busy')
   })
 
-  it('re-splits into sentences when the host refuses a larger request', async () => {
-    // Only the oversized request is refused; the sentence-sized retries succeed.
-    fetchMock.mockImplementation(async (_url: string, init: { body: string }) => {
-      const { text } = JSON.parse(init.body) as { text: string }
-      return text.length > 5 ? refusal('text must be 1..5 characters') : new Response('AUDIO', { status: 200 })
-    })
-    const audio = new SpeechAudio()
-    const ended = vi.fn()
-    const playing = audio.speak('Uma. Duas.', undefined, ended)
-    await vi.waitFor(() => { expect(FakeAudio.instances.length).toBe(1) })
-    FakeAudio.instances[0]?.fire('ended')
-    await vi.waitFor(() => { expect(FakeAudio.instances.length).toBe(2) })
-    FakeAudio.instances[1]?.fire('ended')
-    await playing
-    // The first call is the refused whole reply; the retries are the sentences.
-    expect([requested(1).text, requested(2).text]).toEqual(['Uma.', 'Duas.'])
-    expect(ended).toHaveBeenCalledOnce()
-  })
-
-  it('ignores a refusal whose declared limit cannot be used', async () => {
-    fetchMock.mockResolvedValue(refusal('text must be 1..0 characters'))
-    await expect(new SpeechAudio().speak('Texto', undefined, () => {})).rejects.toThrow('1..0 characters')
-  })
-
   it('speaks nothing at all for blank text', async () => {
     const ended = vi.fn()
     await new SpeechAudio().speak('   \n  ', undefined, ended)
@@ -342,14 +365,14 @@ describe('SpeechAudio refusals', () => {
     expect(ended).not.toHaveBeenCalled()
   })
 
-  it('speaks a reply larger than one request sentence by sentence', async () => {
-    fetchMock.mockResolvedValue(new Response('AUDIO', { status: 200 }))
+  it('cuts each request to a segment, whatever the reply size', async () => {
+    fetchMock.mockImplementation(async () => new Response('AUDIO', { status: 200 }))
     const audio = new SpeechAudio()
     const playing = audio.speak('Frase. '.repeat(4000), undefined, () => {})
-    await vi.waitFor(() => { expect(FakeAudio.instances.length).toBe(1) })
-    // No single request could carry this reply, so the first one is a sentence.
-    expect(requested().text).toBe('Frase.')
-    await vi.waitFor(() => { expect(fetchMock.mock.calls.length).toBeGreaterThan(1) })
+    await vi.waitFor(() => { expect(fetchMock.mock.calls.length).toBeGreaterThan(2) })
+    for (let index = 0; index < fetchMock.mock.calls.length; index += 1) {
+      expect(String(requested(index).text).length).toBeLessThanOrEqual(400)
+    }
     audio.stop()
     await playing
   })

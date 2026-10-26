@@ -1,13 +1,9 @@
 /**
- * Text chunking for read-aloud. A reply is normally sent as one request, so the
- * provider can stream audio while it works through the text; chunking only
- * applies to a reply larger than one request may carry, and to the fallback
- * path used when the browser cannot stream encoded audio.
+ * Text chunking for read-aloud: every synthesis request carries one span, so a
+ * dropped connection can only cost the segment it was carrying.
  */
 
-import { MAX_TEXT_CHARS } from '../speech-limits.ts'
-
-/** Chunk size used when streaming is unavailable: one sentence per request. */
+/** Longest span one request carries. */
 const SENTENCE_CHARS = 400
 
 /** Break points preferred inside an over-long span, longest pause first. */
@@ -31,31 +27,6 @@ export function splitSentences(text: string, limit: number = SENTENCE_CHARS): re
     }
   }
   return spans
-}
-
-/**
- * Pack one text into requests: a single span when it fits, otherwise several
- * spans cut on sentence ends.
- * @param text - projected spoken text.
- * @returns one or more speakable requests, never empty strings.
- */
-export function splitRequests(text: string): readonly string[] {
-  const trimmed = text.trim()
-  if (trimmed === '') return []
-  if (trimmed.length <= MAX_TEXT_CHARS) return [trimmed]
-  const packed: string[] = []
-  let current = ''
-  for (const sentence of splitSentences(trimmed)) {
-    if (current !== '' && current.length + sentence.length + 1 > MAX_TEXT_CHARS) {
-      packed.push(current)
-      current = ''
-    }
-    current = current === '' ? sentence : `${current} ${sentence}`
-  }
-  // The loop leaves `current` holding the last pack, and a non-blank text always
-  // yields at least one sentence, so there is nothing to guard here.
-  packed.push(current)
-  return packed
 }
 
 /**
