@@ -3,6 +3,8 @@
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
   'speak.read': '朗读这条回复',
+  'speak.pause': '暂停朗读',
+  'speak.resume': '继续朗读',
   'speak.stop': '停止朗读',
   'speak.failed.unavailable': '这条回复暂时无法朗读',
   'speak.failed.provider': '语音服务调用失败',
@@ -30,6 +32,8 @@ export type SpeechKey = keyof typeof zh
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
   'speak.read': 'Read this reply aloud',
+  'speak.pause': 'Pause reading',
+  'speak.resume': 'Resume reading',
   'speak.stop': 'Stop reading aloud',
   'speak.failed.unavailable': 'This reply has no spoken text',
   'speak.failed.provider': 'The speech service call failed',

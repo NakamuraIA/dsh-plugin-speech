@@ -8,6 +8,7 @@ import type { SpeechAudio, SpeechOverrides } from '../src/client/speech-audio.ts
 interface Call {
   readonly text: string
   readonly overrides: SpeechOverrides | undefined
+  readonly cacheKey: string | undefined
   readonly finish: () => void
 }
 
@@ -17,6 +18,8 @@ function fakeAudio(): {
   calls: Call[]
   stopped: number
   disposed: number
+  paused: number
+  resumed: number
   fail: (error: Error) => void
 } {
   const calls: Call[] = []
@@ -24,12 +27,21 @@ function fakeAudio(): {
   const double = {
     stopped: 0,
     disposed: 0,
-    async speak(text: string, overrides: SpeechOverrides | undefined, onEnded: () => void): Promise<void> {
+    paused: 0,
+    resumed: 0,
+    async speak(
+      text: string,
+      overrides: SpeechOverrides | undefined,
+      onEnded: () => void,
+      cacheKey?: string,
+    ): Promise<void> {
       if (failure !== undefined) throw failure
       await new Promise<void>((resolve) => {
-        calls.push({ text, overrides, finish: () => { onEnded(); resolve() } })
+        calls.push({ text, overrides, cacheKey, finish: () => { onEnded(); resolve() } })
       })
     },
+    pause(): void { double.paused += 1 },
+    resume(): void { double.resumed += 1 },
     stop(): void { double.stopped += 1 },
     dispose(): void { double.disposed += 1 },
   }
@@ -38,6 +50,8 @@ function fakeAudio(): {
     calls,
     get stopped() { return double.stopped },
     get disposed() { return double.disposed },
+    get paused() { return double.paused },
+    get resumed() { return double.resumed },
     fail: (error: Error) => { failure = error },
   }
 }
@@ -218,10 +232,83 @@ describe('SpeechController', () => {
 
   it('starts a fresh state source', () => {
     const state = createSpeechState()
-    expect(state.getSnapshot()).toEqual({ active: null, failure: null, detail: null, sources: new Map() })
+    expect(state.getSnapshot()).toEqual({
+      active: null, paused: false, failure: null, detail: null, sources: new Map(),
+    })
     const listener = vi.fn()
     state.subscribe(listener)
     expect(listener).not.toHaveBeenCalled()
     expect(state.getSnapshot().sources.size).toBe(0)
+  })
+
+  it('holds the active reading instead of restarting it', async () => {
+    const state = createSpeechState()
+    const audio = fakeAudio()
+    const controller = new SpeechController(state, audio.audio, () => {})
+    controller.record(MESSAGE, 'Uma frase longa.')
+    const spoken = controller.speak(MESSAGE, { skipCode: true })
+
+    await controller.toggle(MESSAGE, { skipCode: true })
+    expect(audio.paused).toBe(1)
+    expect(audio.stopped).toBe(0)
+    expect(state.getSnapshot().paused).toBe(true)
+    // The reading was held, not restarted: still one synthesis in flight.
+    expect(audio.calls).toHaveLength(1)
+
+    await controller.toggle(MESSAGE, { skipCode: true })
+    expect(audio.resumed).toBe(1)
+    expect(state.getSnapshot().paused).toBe(false)
+    expect(audio.calls).toHaveLength(1)
+
+    audio.calls[0]?.finish()
+    await spoken
+    expect(state.getSnapshot().active).toBeNull()
+  })
+
+  it('speaks a different message instead of holding the active one', async () => {
+    const state = createSpeechState()
+    const audio = fakeAudio()
+    const controller = new SpeechController(state, audio.audio, () => {})
+    controller.record(MESSAGE, 'Primeira.')
+    controller.record('msg-2', 'Segunda.')
+    const first = controller.speak(MESSAGE, { skipCode: true })
+    void controller.toggle('msg-2', { skipCode: true })
+    expect(state.getSnapshot().active).toBe('msg-2')
+    expect(audio.paused).toBe(0)
+    expect(audio.calls).toHaveLength(2)
+    audio.calls[0]?.finish()
+    audio.calls[1]?.finish()
+    await first
+  })
+
+  it('caches a reading under the message id, but never a preview', async () => {
+    const state = createSpeechState()
+    const audio = fakeAudio()
+    const controller = new SpeechController(state, audio.audio, () => {})
+    controller.record(MESSAGE, 'Texto.')
+
+    const spoken = controller.speak(MESSAGE, { skipCode: true })
+    expect(audio.calls[0]?.cacheKey).toBe(MESSAGE)
+    audio.calls[0]?.finish()
+    await spoken
+
+    const preview = controller.speak(MESSAGE, { skipCode: true }, { voice: 'outra' })
+    expect(audio.calls[1]?.cacheKey).toBe('')
+    audio.calls[1]?.finish()
+    await preview
+  })
+
+  it('clears a pause with the active mark when stopped', async () => {
+    const state = createSpeechState()
+    const audio = fakeAudio()
+    const controller = new SpeechController(state, audio.audio, () => {})
+    controller.record(MESSAGE, 'Texto.')
+    const spoken = controller.speak(MESSAGE, { skipCode: true })
+    await controller.toggle(MESSAGE, { skipCode: true })
+    controller.stop()
+    expect(state.getSnapshot().paused).toBe(false)
+    expect(state.getSnapshot().active).toBeNull()
+    audio.calls[0]?.finish()
+    await spoken
   })
 })

@@ -18,6 +18,12 @@ export type SpeechFailure =
 export interface SpeechState {
   /** Message whose audio is being produced or playing; null while silent. */
   active: string | null
+  /**
+   * Whether the reader paused the active playback. Pausing stops the sound only:
+   * synthesis and buffering continue behind it, so resuming starts where the
+   * voice stopped rather than regenerating the reply.
+   */
+  paused: boolean
   /** Failure the last attempt hit; null when none stands. */
   failure: SpeechFailure | null
   /**
@@ -41,6 +47,7 @@ export interface SpeechState {
 export function createSpeechState(): SnapshotStore<SpeechState> {
   return createSnapshotStore<SpeechState>({
     active: null,
+    paused: false,
     failure: null,
     detail: null,
     sources: new Map(),

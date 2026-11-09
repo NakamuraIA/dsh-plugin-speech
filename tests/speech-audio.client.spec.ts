@@ -11,6 +11,8 @@ class FakeAudio {
   src: string
   ended = false
   paused = true
+  /** Playhead position the buffer guard measures its lead against. */
+  currentTime = 0
   private readonly listeners = new Map<string, Set<() => void>>()
 
   constructor(src: string) {
@@ -47,8 +49,12 @@ class FakeAudio {
 
 /** A source buffer that grows by a fixed number of seconds per append. */
 class FakeSourceBuffer {
-  /** Audio seconds one append is worth. */
-  static secondsPerAppend = 0.6
+  /**
+   * Audio seconds one append is worth. Chosen so three appends clear the
+   * playhead's head (6 s) while two stay below it, which is the boundary every
+   * streaming spec is written around.
+   */
+  static secondsPerAppend = 2.4
   mode = 'segments'
   readonly chunks: Uint8Array[] = []
   private seconds = 0
@@ -144,7 +150,7 @@ beforeEach(() => {
   FakeMediaSource.instances.length = 0
   FakeMediaSource.supported = true
   FakeMediaSource.addFailure = undefined
-  FakeSourceBuffer.secondsPerAppend = 0.6
+  FakeSourceBuffer.secondsPerAppend = 2.4
   fetchMock.mockReset()
   createObjectURL.mockClear()
   vi.stubGlobal('Audio', FakeAudio)
@@ -167,13 +173,13 @@ describe('SpeechAudio streaming path', () => {
     expect(requested()).toEqual({ text: 'Primeira frase. Segunda frase.', voice: 'voz' })
     await vi.waitFor(() => { expect(buffer().mode).toBe('sequence') })
 
-    // One chunk is 0.6 s, below the 1.5 s head: playback waits.
+    // One chunk is 2.4 s, below the 6 s head: playback waits.
     await source.push('A')
     await source.push('B')
     await vi.waitFor(() => { expect(buffer().chunks.length).toBe(2) })
     expect(element().paused).toBe(true)
 
-    // The third chunk reaches 1.8 s and speech begins, body still open.
+    // The third chunk reaches 7.2 s and speech begins, body still open.
     await source.push('C')
     await vi.waitFor(() => { expect(element().paused).toBe(false) })
     expect(fetchMock).toHaveBeenCalledOnce()
@@ -275,6 +281,150 @@ describe('SpeechAudio streaming path', () => {
     await source.close()
     await playing
     expect(element().paused).toBe(true)
+  })
+
+  it('keeps the reply arriving while the reader holds the voice', async () => {
+    const source = stream()
+    fetchMock.mockResolvedValue(source.response)
+    const audio = new SpeechAudio()
+    const playing = audio.speak('Uma frase.', undefined, () => {})
+    for (const chunk of ['A', 'B', 'C']) await source.push(chunk)
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+
+    audio.pause()
+    expect(element().paused).toBe(true)
+    const held = buffer().chunks.length
+    // Holding the voice must not stop the synthesis behind it: the buffer keeps
+    // growing so the reader comes back to a reply further along, not a silent
+    // request that has to start over.
+    await source.push('D')
+    await source.push('E')
+    await vi.waitFor(() => { expect(buffer().chunks.length).toBe(held + 2) })
+    expect(element().paused).toBe(true)
+
+    audio.resume()
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+
+    await source.close()
+    element().fire('ended')
+    await playing
+  })
+
+  it('holds the voice when the buffer falls behind the playhead', async () => {
+    FakeSourceBuffer.secondsPerAppend = 2
+    const source = stream()
+    fetchMock.mockResolvedValue(source.response)
+    const audio = new SpeechAudio()
+    const playing = audio.speak('Uma frase.', undefined, () => {})
+    for (const chunk of ['A', 'B', 'C']) await source.push(chunk)
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+
+    // The playhead reaches the end of what arrived: the guard stops the voice
+    // instead of letting it run dry and gap.
+    element().currentTime = 5.5
+    await vi.waitFor(() => { expect(element().paused).toBe(true) })
+
+    // More audio lands: the lead is back above the high-water mark, so the guard
+    // lets the voice continue from where it stopped.
+    for (const chunk of ['D', 'E', 'F']) await source.push(chunk)
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+
+    await source.close()
+    element().fire('ended')
+    await playing
+  })
+
+  it('does not lift a hold the reader asked for', async () => {
+    FakeSourceBuffer.secondsPerAppend = 2
+    const source = stream()
+    fetchMock.mockResolvedValue(source.response)
+    const audio = new SpeechAudio()
+    const playing = audio.speak('Uma frase.', undefined, () => {})
+    for (const chunk of ['A', 'B', 'C']) await source.push(chunk)
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+
+    audio.pause()
+    for (const chunk of ['D', 'E', 'F', 'G']) await source.push(chunk)
+    // Plenty buffered, but the reader owns this pause.
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(element().paused).toBe(true)
+
+    audio.resume()
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+
+    await source.close()
+    element().fire('ended')
+    await playing
+  })
+
+  it('never holds the voice once the body is drained', async () => {
+    FakeSourceBuffer.secondsPerAppend = 2
+    const source = stream()
+    fetchMock.mockResolvedValue(source.response)
+    const audio = new SpeechAudio()
+    const ended = vi.fn()
+    const playing = audio.speak('Uma frase.', undefined, ended)
+    for (const chunk of ['A', 'B', 'C']) await source.push(chunk)
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+
+    await source.close()
+    // At the end of a reply the lead is zero by definition. The guard must not
+    // read that as a stall: holding there clips the last words and leaves the
+    // element paused short of 'ended', which is what a stuck button looked like.
+    element().currentTime = 5.9
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(element().paused).toBe(false)
+
+    element().fire('ended')
+    await playing
+    expect(ended).toHaveBeenCalledOnce()
+  })
+
+  it('replays a finished reply without asking the service again', async () => {
+    const source = stream()
+    fetchMock.mockResolvedValue(source.response)
+    const audio = new SpeechAudio()
+    const first = audio.speak('Uma frase.', undefined, () => {}, 'msg-1')
+    for (const chunk of ['A', 'B', 'C']) await source.push(chunk)
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+    await source.close()
+    element().fire('ended')
+    await first
+    expect(fetchMock).toHaveBeenCalledOnce()
+
+    const ended = vi.fn()
+    const replay = audio.speak('Uma frase.', undefined, ended, 'msg-1')
+    expect(fetchMock).toHaveBeenCalledOnce()
+    await vi.waitFor(() => { expect(FakeAudio.instances.length).toBe(2) })
+    // The replay is one finished file: no MediaSource, no second request.
+    expect(FakeMediaSource.instances).toHaveLength(1)
+    expect(lastBlob().size).toBe(3)
+    element().fire('ended')
+    await replay
+    expect(ended).toHaveBeenCalledOnce()
+  })
+
+  it('does not cache a reply the body cut short', async () => {
+    const source = stream()
+    fetchMock.mockResolvedValue(source.response)
+    const audio = new SpeechAudio()
+    const first = audio.speak('Uma frase.', undefined, () => {}, 'msg-1')
+    for (const chunk of ['A', 'B', 'C']) await source.push(chunk)
+    await vi.waitFor(() => { expect(element().paused).toBe(false) })
+    source.fail(new Error('conexão caiu'))
+    await vi.waitFor(() => { expect(FakeMediaSource.instances[0]?.ended).toHaveBeenCalled() })
+    element().fire('ended')
+    await first
+
+    // A truncated reply must not replay as the same truncation, so the next
+    // attempt goes back to the service.
+    FakeMediaSource.supported = false
+    fetchMock.mockResolvedValue(new Response('AUDIO', { status: 200 }))
+    const second = audio.speak('Uma frase.', undefined, () => {}, 'msg-1')
+    await vi.waitFor(() => { expect(FakeAudio.instances.length).toBe(2) })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    element().fire('ended')
+    await second
   })
 })
 

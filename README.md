@@ -8,9 +8,11 @@ Read assistant replies aloud in [DeepSeek Harness](https://github.com/deepseek-a
 
 ## What it does
 
-Each finished assistant message gets a play control in its action row. Press it and the reply is spoken through a text-to-speech service; press it again and it stops. A settings row in General owns the service, the voice, and the tuning.
+Each finished assistant message gets a play control in its action row. Press it and the reply is spoken through a text-to-speech service. Press it again and the voice **pauses** — the reply keeps being synthesized and buffered behind it — and pressing once more resumes from the same word. A separate stop control appears beside it while a reply is the active one, for when the reading is over rather than interrupted. A settings row in General owns the service, the voice, and the tuning.
 
-The whole reply goes out in **one request** and the host streams the audio back while the service is still synthesizing it. The browser holds back only the first **1.5 seconds** of audio — enough to cover the first chunk's jitter — and starts the voice: measured at about **one second** from the click, with a two-minute reading arriving in under two seconds from then on.
+The whole reply goes out in **one request** and the host streams the audio back while the service is still synthesizing it. The browser holds the first **6 seconds** of audio before it starts the voice, and holds it again mid-reply if the buffer ever falls behind the playhead — so a reading runs continuously instead of stopping to wait for the next chunk. A reply that finishes arriving first starts immediately; a short one never waits.
+
+A finished reply is **kept in memory**, so pressing play on the same message again is instant and asks the service nothing. The cache holds up to 8 replies or 64 MB, whichever comes first, and it dies with the page: nothing is written to disk.
 
 ## Providers
 
@@ -26,7 +28,7 @@ Every handshake carries a short-lived `Sec-MS-GEC` token: the current time in Wi
 
 ## Requirements
 
-- A DeepSeek Harness surface — `dsh web`, or the desktop app — version `0.2.0-rc.2` or newer.
+- A DeepSeek Harness surface — `dsh web`, or the desktop app — version `0.2.2-rc.1` or newer.
 - Network access to the speech service. Nothing else: there is no model to download, and the Edge provider needs no account.
 
 The version floor is not decorative. The plugin's preferences are its own Cordis entry config, exposed to the settings screen as a form through `ctx.configForms`. Releases before `0.2.0-rc.2` had plugins register settings namespaces themselves (`settings.register`) and handed the browser a `ctx.settingsScope`; both services are gone.
@@ -97,14 +99,22 @@ click ─ ▶ POST /speech/speak { text }
                            its own entry config
                            ────────────────────────── ▶ synthesize
         ◀ ─ audio bytes stream back ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-play from the first 1.5 s, keep appending behind it
+buffer the first 6 s, then play while the rest appends
 ```
 
 Synthesis lives on the host because a browser cannot hold an API key and cannot reach most services across CORS. The browser only posts text and plays bytes. Every editable leaf of the entry config is `.volatile()`, so a settings write lands in the running host without reloading it — the host reads the same value the browser wrote.
 
-One request is the point. Every extra request pays a fresh handshake — around 0.9 s to the service — and adds a connection that can be dropped; sending the whole reply once means one handshake and one stream. The service is fast enough for that to be the right trade: measured at **73x realtime** on a warm connection and 1.5x on a cold one, so a two-minute reading arrives in under two seconds while the first second of it is already playing.
+One request is the point. Every extra request pays a fresh handshake — around 0.9 s to the service — and adds a connection that can be dropped; sending the whole reply once means one handshake and one stream. The service is fast enough for that to be the right trade: measured at **73x realtime** on a warm connection and 1.5x on a cold one, so a two-minute reading arrives in under two seconds.
 
-The 1.5-second head is the whole latency budget. It exists to cover the jitter between the first chunk and the next one, not to wait for a useful part of the reply: a smaller head starts playing on the first frame and occasionally stutters, a larger one buys nothing. If the stream dies after the voice started, what is already buffered still plays out; if the engine refuses the buffer outright the reply is played as one whole file instead.
+The **6-second head** is what keeps the voice continuous. A reply shorter than that finishes arriving first, so playback begins the moment the body ends and the wait is invisible; a longer one starts once the head is in hand, with enough margin to absorb the jitter that used to drain a smaller head.
+
+Past that point a guard watches the distance between the playhead and the last byte buffered. Under **2 seconds** of lead it holds the voice — synthesis carries on behind the hold — and above **6 seconds** it lets go. That is the difference between a stall the listener hears as a dropped word and one they never notice.
+
+The guard knows when the reply has stopped arriving. At the end of any reading that lead reaches zero by definition, and a hold there would clip the final words and leave the element paused short of its `ended` event — a reading that never finishes and a control that never resets. Once the body is drained the guard only relaxes.
+
+If the stream dies after the voice started, what is already buffered still plays out; if the engine refuses the buffer outright the reply is played as one whole file instead.
+
+Skipping ahead is cheap: a finished reply lives in memory as one file, so playing it again reuses it instead of synthesizing it. That copy is what makes the second listen instant, and it is also why a replay can seek. Nothing reaches disk, and the cache is dropped with the page — as is a reply that arrived truncated, so a broken reading is never replayed as if it were whole.
 
 A voice can also end every sentence with a long silence of its own — `pt-BR-AntonioNeural`, the schema default, leaves about 0.9 s at each one, while the multilingual voices leave none. That silence is in the audio the service returns, not in how this plugin plays it.
 
@@ -122,6 +132,12 @@ pnpm typecheck  # sources and specs
 `build/plugin-bundle.ts` is the client-bundle preset. It emits the `window.__ModuleLoader__.load` handoff, keeps every module-table row a `require`, compiles CSS Modules into one injected style tag, and fails the build on a cross-plugin value import. It is a self-contained copy of the harness preset, which is what lets the package be built here.
 
 Three specs under `tests/checkout/` compose the real client registries, which only exist as sources inside a harness checkout; `tests/checkout/README.md` explains why and how to run them. Everything else, including the client wiring, runs through `pnpm test`.
+
+### Migrating from 0.2.x
+
+- The harness floor is now `0.2.2-rc.1` (Cordis 4.1). `ConfigFormSnapshot` dropped `mode`; a page that is not writable is read from `writable` instead.
+- The action's second press is a **pause**, not a stop. Stopping moved to its own control beside it, so a reader who only ever used the toggle now has one more button on screen while a reply is active.
+- A reply that has finished is cached in memory and replayed without another synthesis.
 
 ### Migrating from 0.1.x
 

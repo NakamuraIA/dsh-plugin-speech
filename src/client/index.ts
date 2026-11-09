@@ -109,20 +109,17 @@ export function apply(ctx: ClientContext): void {
   }
 
   const toggle = (messageId: string): void => {
-    const snapshot = state.getSnapshot()
-    if (snapshot.active === messageId && snapshot.failure === null) {
-      controller.stop()
-      return
-    }
-    void controller.speak(messageId, projection())
+    void controller.toggle(messageId, projection())
   }
+
+  const stopSpeaking = (): void => { controller.stop() }
 
   ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
     name: 'conversation.chat.assistant-actions',
     id: 'speech',
     order: 20,
     locale: SETTINGS_NS,
-    inject: (): SpeechActionInjected => ({ hooks: { speech: state }, toggle }),
+    inject: (): SpeechActionInjected => ({ hooks: { speech: state }, toggle, stop: stopSpeaking }),
   }, SpeakAction))
 
   ctx.slots.inject('settings.general.item', () => ctx.slots.register({
@@ -136,11 +133,11 @@ export function apply(ctx: ClientContext): void {
       sync()
       refreshVoices(section().provider)
       // A write answers whether the Host accepted it; a refusal also reloads the
-      // durable section, so a rejected value is visible twice over. A memory-mode
-      // page keeps the choice process-local and resolves every write as refused
-      // without ever reaching the Host, so its settlement says nothing.
+      // durable section, so a rejected value is visible twice over. A Host
+      // document that is not writable resolves every write as refused without
+      // ever reaching the profile, so its settlement says nothing.
       const settle = (written: Promise<boolean>): void => {
-        if (host.getSnapshot().mode === 'memory') return
+        if (!host.getSnapshot().writable) return
         void written.then(
           (accepted) => { actions.markWriteFailed(!accepted) },
           () => { actions.markWriteFailed(true) },

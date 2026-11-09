@@ -1,8 +1,11 @@
 /**
- * Read-aloud action for one finalized assistant message: a play/stop control in
- * the message's action strip, with the failure it hit shown beside it.
+ * Read-aloud action for one finalized assistant message: a play/pause control in
+ * the message's action strip, a stop control beside it while it is the active
+ * message, and the failure the last attempt hit.
  */
-import { IconPlayOutlineRegular, IconStopFillRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  IconPauseOutlineRegular, IconPlayOutlineRegular, IconStopFillRegular,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SpeechFailure, SpeechState } from './speech-state.ts'
@@ -16,11 +19,13 @@ export interface SpeechActionInjected {
     speech: HostObservable<SpeechState>
   }
   /**
-   * Speak the message, or stop it while it is the active one; a failed message
-   * retries instead of stopping.
+   * Speak the message, or hold/resume it while it is the active one; a failed
+   * message retries instead of pausing.
    * @param messageId - target assistant message.
    */
   toggle: (messageId: string) => void
+  /** Stop the active message outright and drop the audio in flight. */
+  stop: () => void
 }
 
 /** Full props of one read-aloud action. */
@@ -40,15 +45,19 @@ const FAILURE_KEYS: Readonly<Record<SpeechFailure, SpeechKey>> = {
  * @param props - composed slot props.
  * @returns the action element tree.
  */
-export function SpeakAction({ messageId, t, useSpeech, toggle }: SpeechActionProps) {
+export function SpeakAction({ messageId, t, useSpeech, toggle, stop }: SpeechActionProps) {
   const active = useSpeech(s => s.active)
+  const paused = useSpeech(s => s.paused)
   const failure = useSpeech(s => s.failure)
   const detail = useSpeech(s => s.detail)
   const known = useSpeech(s => s.sources.has(messageId))
   const mine = active === messageId
   const failed = mine && failure !== null
   const speaking = mine && !failed
-  const label = speaking ? t('speak.stop') : t('speak.read')
+  const held = speaking && paused
+  const label = !speaking
+    ? t('speak.read')
+    : held ? t('speak.resume') : t('speak.pause')
   return (
     <span className={css.wrap}>
       {failed && (
@@ -64,8 +73,21 @@ export function SpeakAction({ messageId, t, useSpeech, toggle }: SpeechActionPro
         disabled={!known && !mine}
         onClick={() => { toggle(String(messageId)) }}
       >
-        {speaking ? <IconStopFillRegular /> : <IconPlayOutlineRegular />}
+        {!speaking
+          ? <IconPlayOutlineRegular />
+          : held ? <IconPlayOutlineRegular /> : <IconPauseOutlineRegular />}
       </button>
+      {speaking && (
+        <button
+          type="button"
+          className={css.action}
+          aria-label={t('speak.stop')}
+          title={t('speak.stop')}
+          onClick={stop}
+        >
+          <IconStopFillRegular />
+        </button>
+      )}
     </span>
   )
 }

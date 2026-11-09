@@ -25,11 +25,35 @@ const SPEAK_ROUTE = '/speech/speak'
 const AUDIO_MIME = 'audio/mpeg'
 
 /**
- * Seconds of audio to hold before starting. Enough to cover the gap between the
- * first chunk and the next, small enough to be inaudible as a delay: the service
- * normally delivers a whole reply in about a second, so this is the only wait.
+ * Seconds of audio to hold before starting. A head this size is what keeps the
+ * voice continuous: the service delivers faster than realtime once warm, and the
+ * margin absorbs the jitter that used to drain a smaller head and stall mid-word.
+ * It is not a wait in practice — a reply shorter than this finishes arriving
+ * first, so playback starts the moment the body ends.
  */
-const PREBUFFER_SECONDS = 1.5
+const PREBUFFER_SECONDS = 6
+
+/**
+ * While playing, hold the voice when the buffer falls below this many seconds
+ * ahead of the playhead, and let it go again above {@link HIGH_WATER_SECONDS}.
+ *
+ * This is the difference between a stall the listener hears as a dropped word
+ * and one they never notice: the element waits on purpose while the buffer
+ * refills, instead of running dry and restarting when a chunk lands.
+ */
+const LOW_WATER_SECONDS = 2
+
+/** Buffer lead that lifts the stall hold installed at {@link LOW_WATER_SECONDS}. */
+const HIGH_WATER_SECONDS = 6
+
+/** How often the playhead's buffer lead is checked while a reply streams. */
+const GUARD_INTERVAL_MS = 250
+
+/** Replies kept for replay without asking the service again. */
+const CACHE_ENTRIES = 8
+
+/** Total encoded audio the replay cache may hold. */
+const CACHE_BYTES = 64 * 1024 * 1024
 
 /** Per-request overrides the settings screen uses to preview an unsaved voice. */
 export interface SpeechOverrides {
@@ -131,34 +155,87 @@ export class SpeechAudio {
   private objectUrl: string | undefined
   /** Aborts the response body a stop would otherwise keep reading forever. */
   private abort: AbortController | undefined
+  /**
+   * Reply audio kept for replay, oldest first. In memory on purpose: it costs no
+   * disk, and it dies with the page, which is the lifetime a generated reply has.
+   */
+  private readonly cache = new Map<string, Blob>()
+  /** Total bytes {@link cache} holds, so the cap can be enforced without summing. */
+  private cachedBytes = 0
+  /** Whether the READER paused; the guard must not lift that pause. */
+  private readerPaused = false
+  /** Whether the guard paused the element to let the buffer refill. */
+  private stallPaused = false
+  /** Set while a synthesis reads its body, so the guard knows more is coming. */
+  private feeding = false
 
   /**
    * Speak one text: one request for the whole reply, played as it arrives.
    * @param text - projected spoken text.
    * @param overrides - preview overrides, or undefined to use the durable settings.
    * @param onEnded - called once the last audio has played out.
+   * @param cacheKey - reply identity for replay; empty disables the cache.
    */
-  async speak(text: string, overrides: SpeechOverrides | undefined, onEnded: () => void): Promise<void> {
+  async speak(
+    text: string,
+    overrides: SpeechOverrides | undefined,
+    onEnded: () => void,
+    cacheKey = '',
+  ): Promise<void> {
     if (text.trim() === '') return
     const generation = ++this.generation
     this.dropPlayback()
+    this.readerPaused = false
+    this.stallPaused = false
+    const replay = cacheKey === '' ? undefined : this.cache.get(cacheKey)
+    if (replay !== undefined) {
+      // A replayed reply is one finished file: no stream, no jitter, and the
+      // platform's own seek applies. The service is not asked again.
+      const played = await this.playBlob(replay, generation)
+      if (played) onEnded()
+      return
+    }
     const abort = new AbortController()
     this.abort = abort
-    const played = await this.playReply(text, overrides, generation, abort.signal)
+    const played = await this.playReply(text, overrides, generation, abort.signal, cacheKey)
     // A run superseded by a later stop or speak answers false, so a true answer
     // is the only thing that reports an end.
     if (played) onEnded()
   }
 
+  /**
+   * Pause the sound without touching the request behind it. Synthesis and
+   * buffering continue, so the reply is further along when the reader comes back.
+   */
+  pause(): void {
+    this.readerPaused = true
+    this.playing?.pause()
+  }
+
+  /** Resume a playback the reader paused, keeping its position. */
+  resume(): void {
+    this.readerPaused = false
+    // A hold the guard installed is lifted by the guard itself, once the buffer
+    // is far enough ahead; resuming here would restart the very gap it prevents.
+    if (this.stallPaused) return
+    const element = this.playing
+    if (element === undefined) return
+    void element.play().catch(() => {})
+  }
+
   /** Stop playback and abandon whatever is still arriving. */
   stop(): void {
+    this.readerPaused = false
+    this.stallPaused = false
     this.generation += 1
     this.dropPlayback()
   }
 
-  /** Stop playback and release the last object URL. */
+  /** Stop playback, release the last object URL, and drop every cached reply. */
   dispose(): void {
     this.stop()
+    this.cache.clear()
+    this.cachedBytes = 0
   }
 
   /**
@@ -167,6 +244,7 @@ export class SpeechAudio {
    * @param overrides - preview overrides, when any.
    * @param generation - token this request belongs to.
    * @param signal - aborts the reply in flight.
+   * @param cacheKey - reply identity to remember the audio under; empty skips it.
    * @returns whether playback ran to the end under the same generation.
    */
   private async playReply(
@@ -174,6 +252,7 @@ export class SpeechAudio {
     overrides: SpeechOverrides | undefined,
     generation: number,
     signal: AbortSignal,
+    cacheKey: string,
   ): Promise<boolean> {
     let response: Response
     try {
@@ -193,18 +272,24 @@ export class SpeechAudio {
     if (body === null || !canStream()) {
       const audio = await response.blob()
       if (generation !== this.generation) return false
+      if (cacheKey !== '') this.remember(cacheKey, [new Uint8Array(await audio.arrayBuffer())])
       return await this.playBlob(audio, generation)
     }
-    return await this.streamReply(body, generation)
+    return await this.streamReply(body, generation, cacheKey)
   }
 
   /**
-   * Append one reply's frames and start the element as soon as the head is in.
+   * Append one reply's frames and start the element once the head is in.
    * @param body - the response body carrying encoded audio.
    * @param generation - token this request belongs to.
+   * @param cacheKey - reply identity to remember the audio under; empty skips it.
    * @returns whether playback ran to the end under the same generation.
    */
-  private async streamReply(body: ReadableStream<Uint8Array>, generation: number): Promise<boolean> {
+  private async streamReply(
+    body: ReadableStream<Uint8Array>,
+    generation: number,
+    cacheKey: string,
+  ): Promise<boolean> {
     const media = new MediaSource()
     const url = URL.createObjectURL(media)
     const element = new Audio(url)
@@ -224,8 +309,31 @@ export class SpeechAudio {
     // Everything read before playback starts, so a buffer that refuses the frames
     // still leaves a complete file to play.
     const held: Uint8Array[] = []
+    // Every chunk of the reply, kept so the audio can be replayed without asking
+    // the service again. Dropped when the cache key is empty.
+    const whole: Uint8Array[] = []
+    const keep = cacheKey !== ''
+    let complete = false
+    const guard = (buffer: SourceBuffer): ReturnType<typeof setInterval> => setInterval(() => {
+      if (generation !== this.generation || !started || element.ended) return
+      // The reader's own pause outranks the guard: it must stay paused.
+      if (this.readerPaused) return
+      const ahead = bufferedSeconds(buffer) - element.currentTime
+      if (!this.stallPaused && ahead < LOW_WATER_SECONDS && this.feeding) {
+        this.stallPaused = true
+        element.pause()
+        return
+      }
+      if (this.stallPaused && (ahead >= HIGH_WATER_SECONDS || !this.feeding)) {
+        this.stallPaused = false
+        void element.play().catch(() => {})
+      }
+    }, GUARD_INTERVAL_MS)
+    this.feeding = true
+    let ticker: ReturnType<typeof setInterval> | undefined
     try {
       const buffer = await openBuffer(media)
+      ticker = guard(buffer)
       for (;;) {
         const { done, value } = await reader.read()
         if (generation !== this.generation) {
@@ -235,6 +343,7 @@ export class SpeechAudio {
         }
         if (value !== undefined && value.length > 0) {
           if (!started) held.push(value)
+          if (keep) whole.push(value)
           await appendChunk(buffer, value)
           // The head is judged per chunk: the body stays open while the service
           // keeps sending, and waiting for it to end would delay speech by the
@@ -246,6 +355,12 @@ export class SpeechAudio {
         }
         if (done) break
       }
+      // The body is drained: no chunk can arrive to widen the lead again, so the
+      // guard must let go before playback finishes. Near the end the lead reaches
+      // zero by definition, and a hold there clips the last words and strands the
+      // element short of its 'ended' — which is a stuck button, not a stall.
+      this.feeding = false
+      complete = true
       if (!await play()) return false
       if (media.readyState === 'open') media.endOfStream()
       await this.playedOut(element, generation)
@@ -264,7 +379,14 @@ export class SpeechAudio {
       // Nothing played: the engine refused the buffer itself. Play the reply as
       // one whole file from the bytes in hand plus the rest of the body.
       void error
-      return await this.playCollected(reader, held, generation)
+      return await this.playCollected(reader, held, generation, cacheKey)
+    } finally {
+      this.feeding = false
+      this.stallPaused = false
+      if (ticker !== undefined) clearInterval(ticker)
+      // A reply only enters the cache once its body really ended: a truncated one
+      // would replay as the same truncation.
+      if (complete && keep) this.remember(cacheKey, whole)
     }
   }
 
@@ -273,12 +395,14 @@ export class SpeechAudio {
    * @param reader - the response reader, partly consumed.
    * @param held - the chunks already in hand.
    * @param generation - token this request belongs to.
+   * @param cacheKey - reply identity to remember the audio under; empty skips it.
    * @returns whether playback ran to the end under the same generation.
    */
   private async playCollected(
     reader: ReadableStreamDefaultReader<Uint8Array>,
     held: readonly Uint8Array[],
     generation: number,
+    cacheKey: string,
   ): Promise<boolean> {
     const chunks = [...held]
     try {
@@ -292,6 +416,7 @@ export class SpeechAudio {
     }
     if (generation !== this.generation) return false
     if (chunks.length === 0) return false
+    if (cacheKey !== '') this.remember(cacheKey, chunks)
     return await this.playBlob(new Blob(chunks as BlobPart[], { type: AUDIO_MIME }), generation)
   }
 
@@ -359,6 +484,32 @@ export class SpeechAudio {
         if (generation !== this.generation) settle()
       }, { once: true })
     })
+  }
+
+  /**
+   * Keep one finished reply for replay, evicting the oldest entries first.
+   * @param key - reply identity.
+   * @param chunks - the reply's encoded audio.
+   */
+  private remember(key: string, chunks: readonly Uint8Array[]): void {
+    if (chunks.length === 0) return
+    const audio = new Blob([...chunks] as BlobPart[], { type: AUDIO_MIME })
+    if (audio.size > CACHE_BYTES) return
+    const previous = this.cache.get(key)
+    if (previous !== undefined) {
+      this.cachedBytes -= previous.size
+      this.cache.delete(key)
+    }
+    this.cache.set(key, audio)
+    this.cachedBytes += audio.size
+    // Map iteration is insertion order, so the first key is the oldest reply.
+    while (this.cache.size > CACHE_ENTRIES || this.cachedBytes > CACHE_BYTES) {
+      const oldest = this.cache.keys().next()
+      if (oldest.done === true) break
+      const evicted = this.cache.get(oldest.value)
+      if (evicted !== undefined) this.cachedBytes -= evicted.size
+      this.cache.delete(oldest.value)
+    }
   }
 
   private dropPlayback(): void {

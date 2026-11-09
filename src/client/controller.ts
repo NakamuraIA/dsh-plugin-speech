@@ -59,22 +59,48 @@ export class SpeechController {
     if (text === '') {
       // Nothing a voice can say: either the log has not delivered the message
       // yet or the reader's preferences projected its content away.
-      this.publish({ active: messageId, failure: 'unavailable', detail: null })
+      this.publish({ active: messageId, paused: false, failure: 'unavailable', detail: null })
       return
     }
-    this.publish({ active: messageId, failure: null, detail: null })
+    this.publish({ active: messageId, paused: false, failure: null, detail: null })
     try {
+      // A preview speaks values that are not the durable ones, so its audio must
+      // not become the cached reply for that message.
+      const cacheKey = overrides === undefined ? messageId : ''
       await this.audio.speak(text, overrides, () => {
-        if (this.state.getSnapshot().active === messageId) this.publish({ active: null })
-      })
+        if (this.state.getSnapshot().active === messageId) this.publish({ active: null, paused: false })
+      }, cacheKey)
     } catch (error) {
       const detail = messageOf(error)
       // A run superseded by a newer request has nothing left to report: painting
       // its failure now would put a red message over whatever replaced it.
       if (this.state.getSnapshot().active !== messageId) return
       this.report(detail)
-      this.publish({ active: messageId, failure: 'provider', detail })
+      this.publish({ active: messageId, paused: false, failure: 'provider', detail })
     }
+  }
+
+  /**
+   * The speaker button: start the message, or hold it while it is the active one.
+   * Pausing here stops the sound only — the reply keeps being synthesized and
+   * buffered, so resuming continues where the voice stopped instead of
+   * regenerating the whole reading.
+   * @param messageId - target assistant message.
+   * @param options - projection options in effect for this reading.
+   */
+  async toggle(messageId: string, options: SpeechTextOptions): Promise<void> {
+    const snapshot = this.state.getSnapshot()
+    if (snapshot.active === messageId && snapshot.failure === null) {
+      if (snapshot.paused) {
+        this.audio.resume()
+        this.publish({ paused: false })
+      } else {
+        this.audio.pause()
+        this.publish({ paused: true })
+      }
+      return
+    }
+    await this.speak(messageId, options)
   }
 
   /**
@@ -97,13 +123,13 @@ export class SpeechController {
   /** Stop the current playback and clear the active message. */
   stop(): void {
     this.audio.stop()
-    if (this.state.getSnapshot().active !== null) this.publish({ active: null })
+    if (this.state.getSnapshot().active !== null) this.publish({ active: null, paused: false })
   }
 
   /** Release playback with the owning plugin. */
   dispose(): void {
     this.audio.dispose()
-    this.publish({ active: null })
+    this.publish({ active: null, paused: false })
   }
 
   private publish(next: Partial<Omit<SpeechState, 'sources'>>): void {
