@@ -1,3 +1,16 @@
+# Dependencies
 node_modules/
+
+# Build output. `pnpm build` regenerates lib/ from src/; committing it lets the
+# compiler tree drift away from the sources without anything failing — which is
+# how an orphaned declaration file survives a rename into the next release.
+lib/
 *.tsbuildinfo
+
+# Logs
+*.log
+
+# Editor and OS noise
 .DS_Store
+Thumbs.db
+desktop.ini
