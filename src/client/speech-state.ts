@@ -13,6 +13,11 @@ export type SpeechFailure =
   | 'unavailable'
   /** The provider call failed, or the audio could not be played. */
   | 'provider'
+  /**
+   * The service refused the handshake. Nothing the reader can change fixes it:
+   * the endpoint moved and the plugin has to be updated.
+   */
+  | 'endpoint'
 
 /** State the read-aloud surface renders from. */
 export interface SpeechState {

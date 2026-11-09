@@ -7,6 +7,7 @@
  */
 
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { SpeechError } from '../speech-errors.ts'
 import { speechText, type SpeechTextOptions } from '../speech-text.ts'
 import type { SpeechAudio, SpeechOverrides } from './speech-audio.ts'
 import type { SpeechState } from './speech-state.ts'
@@ -76,7 +77,15 @@ export class SpeechController {
       // its failure now would put a red message over whatever replaced it.
       if (this.state.getSnapshot().active !== messageId) return
       this.report(detail)
-      this.publish({ active: messageId, paused: false, failure: 'provider', detail })
+      // A refused handshake is not a transient fault: say so, so the reader
+      // knows the fix is an update rather than another attempt.
+      const refused = error instanceof SpeechError && error.code === 'endpoint'
+      this.publish({
+        active: messageId,
+        paused: false,
+        failure: refused ? 'endpoint' : 'provider',
+        detail,
+      })
     }
   }
 

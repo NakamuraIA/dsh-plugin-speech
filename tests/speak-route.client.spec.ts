@@ -152,6 +152,27 @@ describe('POST /speech/speak', () => {
     expect(out.body.toString()).toContain('serviço fora do ar')
   })
 
+  it('names a refused handshake so the surface can say the plugin needs updating', async () => {
+    edge.setMetadata.mockRejectedValue(Object.assign(
+      new Error('Unexpected server response: 403'),
+      { statusCode: 403 },
+    ))
+    const out = response()
+    await serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, reader())
+    expect(out.status).toBe(502)
+    const body = JSON.parse(out.body.toString()) as { error: string, code?: string }
+    expect(body.code).toBe('endpoint')
+    expect(body.error).toContain('403')
+  })
+
+  it('leaves an ordinary provider failure unclassified', async () => {
+    edge.setMetadata.mockRejectedValue(new Error('serviço fora do ar'))
+    const out = response()
+    await serveSpeechRequest(request('POST', { text: 'Olá' }), out.res, reader())
+    const body = JSON.parse(out.body.toString()) as { code?: string }
+    expect(body.code).toBeUndefined()
+  })
+
   it('answers 502 with the string form of a provider rejection that is not an Error', async () => {
     edge.setMetadata.mockRejectedValue('caiu feio')
     const out = response()

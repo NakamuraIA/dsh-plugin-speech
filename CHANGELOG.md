@@ -16,6 +16,11 @@ Requires DeepSeek Harness `0.2.2-rc.1` / Cordis `4.1`.
   whichever comes first) and replayed without another synthesis, so a second
   listen is instant and can seek. Nothing reaches disk; the cache dies with the
   page, and a reply that arrived truncated is never cached.
+- **A refused handshake now says so.** When the Edge endpoint answers `403`,
+  the surface reports "the speech service refused the connection. It changed, so
+  this plugin needs an update" instead of the generic call failure, and the raw
+  status stays in the tooltip. The class is decided on the host
+  (`src/speech-errors.ts`) and travels beside the message.
 - **Fixed: the last words of a reply were clipped** and the control stayed
   active. The buffer guard was still armed while the reply played out, and at
   the end of a reading the lead is zero by definition — so it held the voice a
@@ -25,8 +30,8 @@ Requires DeepSeek Harness `0.2.2-rc.1` / Cordis `4.1`.
   `writable` instead of special-casing memory mode.
 - Dev dependencies moved to `0.2.2-rc.1`, Cordis to `4.1.0`, `msedge-tts` to
   `2.1.1`, and the package now declares `engines.dsh`.
-- 126 specs (was 116), including the pause, guard, cache and end-of-reply
-  regressions.
+- 138 specs (was 116), including the pause, guard, cache, end-of-reply and
+  refused-handshake regressions.
 
 ## 0.2.1
 

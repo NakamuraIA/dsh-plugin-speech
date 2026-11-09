@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { SpeechController } from '../src/client/controller.ts'
 import { createSpeechState } from '../src/client/speech-state.ts'
 import type { SpeechAudio, SpeechOverrides } from '../src/client/speech-audio.ts'
+import { SpeechError } from '../src/speech-errors.ts'
 
 /** One recorded speak call. */
 interface Call {
@@ -310,5 +311,26 @@ describe('SpeechController', () => {
     expect(state.getSnapshot().active).toBeNull()
     audio.calls[0]?.finish()
     await spoken
+  })
+
+  it('marks a refused handshake as something an update fixes', async () => {
+    const state = createSpeechState()
+    const audio = fakeAudio()
+    audio.fail(new SpeechError('Unexpected server response: 403', 'endpoint'))
+    const controller = new SpeechController(state, audio.audio, () => {})
+    controller.record(MESSAGE, 'Texto.')
+    await controller.speak(MESSAGE, { skipCode: true })
+    expect(state.getSnapshot().failure).toBe('endpoint')
+    expect(state.getSnapshot().detail).toContain('403')
+  })
+
+  it('keeps an ordinary provider failure generic', async () => {
+    const state = createSpeechState()
+    const audio = fakeAudio()
+    audio.fail(new SpeechError('serviço fora do ar', undefined))
+    const controller = new SpeechController(state, audio.audio, () => {})
+    controller.record(MESSAGE, 'Texto.')
+    await controller.speak(MESSAGE, { skipCode: true })
+    expect(state.getSnapshot().failure).toBe('provider')
   })
 })

@@ -10,6 +10,7 @@ import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { SpeechAudio } from './providers/types.ts'
 import { selectSpeech, type SpeechOverrides } from './selector.ts'
+import { errorCodeOf } from './speech-errors.ts'
 import { MAX_TEXT_CHARS } from './speech-limits.ts'
 import type { SpeechSettings } from './settings.ts'
 
@@ -163,7 +164,14 @@ export async function serveSpeechRequest(
       res.destroy()
       return
     }
+    // The code travels beside the message so the surface can say something
+    // useful: a refused handshake is not the reader's problem to solve, and the
+    // generic "the call failed" would send them looking in the wrong place.
+    const code = errorCodeOf(error)
     res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
-    res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }))
+    res.end(JSON.stringify({
+      error: error instanceof Error ? error.message : String(error),
+      ...(code === undefined ? {} : { code }),
+    }))
   }
 }

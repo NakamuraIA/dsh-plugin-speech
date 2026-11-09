@@ -38,6 +38,7 @@ export type SpeechActionProps =
 const FAILURE_KEYS: Readonly<Record<SpeechFailure, SpeechKey>> = {
   unavailable: 'speak.failed.unavailable',
   provider: 'speak.failed.provider',
+  endpoint: 'speak.failed.endpoint',
 }
 
 /**

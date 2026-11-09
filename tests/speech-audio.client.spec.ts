@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /** Browser playback: one request per reply, played while it arrives. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { SpeechError } from '../src/speech-errors.ts'
 import { SpeechAudio } from '../src/client/speech-audio.ts'
 
 /** A media element the spec drives by hand. */
@@ -448,6 +449,16 @@ describe('SpeechAudio refusals', () => {
   it('reports a provider failure with the message the host sent', async () => {
     fetchMock.mockResolvedValue(refusal('serviço fora do ar', 502))
     await expect(new SpeechAudio().speak('Texto', undefined, () => {})).rejects.toThrow('serviço fora do ar')
+  })
+
+  it('carries the failure class the host named', async () => {
+    fetchMock.mockResolvedValue(new Response(
+      JSON.stringify({ error: 'Unexpected server response: 403', code: 'endpoint' }),
+      { status: 502, headers: { 'content-type': 'application/json' } },
+    ))
+    const failure = await new SpeechAudio().speak('Texto', undefined, () => {}).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(SpeechError)
+    expect((failure as SpeechError).code).toBe('endpoint')
   })
 
   it('falls back to the status line when the refusal is not the route JSON', async () => {

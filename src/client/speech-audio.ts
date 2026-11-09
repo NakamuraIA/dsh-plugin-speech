@@ -3,20 +3,28 @@
  *
  * One click sends the whole reply in **one request** and the host streams the
  * audio back while the service is still working. The browser appends every chunk
- * to a single MediaSource buffer and starts the element as soon as a short head
- * of audio is in hand — under a second in practice, because the service
- * synthesizes far faster than a voice speaks (measured at 73x realtime on a warm
- * connection, 1.5x on a cold one). From there the element plays out of the
- * buffer while the rest arrives behind it, so the voice is continuous and the
- * wait is a fraction of a second.
+ * to a single MediaSource buffer and waits for a **6-second** head before it
+ * starts the voice; a reply shorter than that finishes arriving first, so a
+ * short one never waits at all.
  *
- * That head is deliberately small: it exists to cover the first chunk's jitter,
- * not to wait for a meaningful part of the reply. Raising it buys nothing when
- * the service is fast and costs exactly what it waits.
+ * From there the element plays out of the buffer while the rest arrives behind
+ * it. A guard watches how far ahead the buffer is: under 2 seconds of lead it
+ * holds the voice, above 6 it lets go — the difference between a stall the
+ * listener hears as a dropped word and one they never notice. The guard lets go
+ * for good once the body is drained, because at the end of a reply the lead is
+ * zero by definition and holding there would clip the final words.
  *
- * When MediaSource is unusable — or the engine accepts the type and then refuses
- * the buffer — the reply is still played as one whole file in one element.
+ * Holding the voice is not stopping it: `pause()` leaves the request and the
+ * buffer alone, so synthesis carries on behind the hold and resuming continues
+ * on the same word.
+ *
+ * A finished reply is kept in memory and replayed as one file, which is what
+ * makes a second listen instant and lets it seek. When MediaSource is unusable —
+ * or the engine accepts the type and then refuses the buffer — the reply is
+ * played as one whole file from the start.
  */
+
+import { SpeechError } from '../speech-errors.ts'
 
 /** Route the host exposes for synthesis. */
 const SPEAK_ROUTE = '/speech/speak'
@@ -68,17 +76,19 @@ export interface SpeechOverrides {
 /**
  * Read the error a failed synthesis answered with.
  * @param response - the failed response.
- * @returns the host's message, or the status line.
+ * @returns the message to report, plus the class of failure when the host named one.
  */
-async function failureOf(response: Response): Promise<string> {
+async function failureOf(response: Response): Promise<SpeechError> {
   try {
-    const body = await response.json() as { error?: unknown }
-    if (typeof body.error === 'string') return body.error
+    const body = await response.json() as { error?: unknown; code?: unknown }
+    if (typeof body.error === 'string') {
+      return new SpeechError(body.error, body.code === 'endpoint' ? 'endpoint' : undefined)
+    }
   } catch (_notJson) {
     // A proxy or a truncated stream can answer with something that is not the
     // route's JSON; the status line still says what happened.
   }
-  return `${response.status} ${response.statusText}`
+  return new SpeechError(`${response.status} ${response.statusText}`, undefined)
 }
 
 /**
@@ -267,7 +277,7 @@ export class SpeechAudio {
       if (generation !== this.generation) return false
       throw error
     }
-    if (!response.ok) throw new Error(await failureOf(response))
+    if (!response.ok) throw await failureOf(response)
     const body = response.body
     if (body === null || !canStream()) {
       const audio = await response.blob()

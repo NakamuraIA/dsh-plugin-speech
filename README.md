@@ -26,6 +26,8 @@ Adding a provider means adding one folder under `src/providers/` and one line in
 
 Every handshake carries a short-lived `Sec-MS-GEC` token: the current time in Windows file-time ticks, rounded down to five minutes, digested together with the well-known client token. In October 2026 the endpoint moved to a **second generation** of that token — a patched SHA-256 paired with a 64-bit checksum — and began answering the first generation with a bare `403` (`Edge TTS WebSocket error: Unexpected server response: 403`), which is what a reply that never speaks looks like from the browser. `src/providers/edge/gec.ts` reproduces the accepted generation; `server.ts` hands it to `msedge-tts` by replacing the library's private URL builder, which is also what pins the token version the endpoint now expects. If read-aloud stops working again, test that token first: it is the only part of this plugin that can expire without the code changing.
 
+A refused handshake is reported as its own failure — *the speech service refused the connection. It changed, so this plugin needs an update* — rather than as the generic call failure. The distinction matters: nothing the reader changes will fix it, and a message that says so sends them to the right place. `src/speech-errors.ts` classifies the failure on the host and carries the class beside the message; the surface renders the matching copy, and the raw `403` stays in the tooltip.
+
 ## Requirements
 
 - A DeepSeek Harness surface — `dsh web`, or the desktop app — version `0.2.2-rc.1` or newer.
